@@ -12,7 +12,8 @@
       "supportsTablet": true,
       "bundleIdentifier": "land.liker.book3app",
       "infoPlist": {
-        "ITSAppUsesNonExemptEncryption": false
+        "ITSAppUsesNonExemptEncryption": false,
+        "UIBackgroundModes": ["audio"]
       }
     },
     "android": {
