@@ -2,11 +2,11 @@ import TrackPlayer, {
   Capability,
   Event,
   type PlaybackActiveTrackChangedEvent,
+  type PlaybackErrorEvent,
   type PlaybackQueueEndedEvent,
   type PlaybackState,
 } from 'react-native-track-player';
 
-// Callback to send events back to the WebView
 type SendToWebView = (data: object) => void;
 
 interface TrackInfo {
@@ -98,7 +98,6 @@ export function registerEventListeners(sendToWebView: SendToWebView) {
     TrackPlayer.addEventListener(
       Event.PlaybackActiveTrackChanged,
       (event: PlaybackActiveTrackChangedEvent) => {
-        // Guard: index can be undefined after reset()
         if (typeof event.index !== 'number') return;
         sendToWebView({
           type: 'trackChanged',
@@ -123,6 +122,16 @@ export function registerEventListeners(sendToWebView: SendToWebView) {
         sendToWebView({
           type: 'playbackState',
           state: event.state,
+        });
+      }
+    ),
+    TrackPlayer.addEventListener(
+      Event.PlaybackError,
+      (event: PlaybackErrorEvent) => {
+        sendToWebView({
+          type: 'error',
+          message: event.message,
+          code: event.code,
         });
       }
     ),
