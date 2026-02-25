@@ -14,7 +14,11 @@
       "infoPlist": {
         "CFBundleDisplayName": "3ook Reader",
         "ITSAppUsesNonExemptEncryption": false,
-        "UIBackgroundModes": ["audio"]
+        "UIBackgroundModes": ["audio"],
+        "NSAppTransportSecurity": {
+          "NSAllowsLocalNetworking": true,
+          "NSAllowsArbitraryLoadsForMedia": true
+        }
       }
     },
     "android": {

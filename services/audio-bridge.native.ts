@@ -26,23 +26,39 @@ export interface LoadMessage {
   };
 }
 
-let isPlayerSetup = false;
+let setupPromise: Promise<void> | null = null;
+let loadPromise: Promise<void> = Promise.resolve();
 
-export async function setupPlayer(): Promise<void> {
-  if (isPlayerSetup) return;
-  await TrackPlayer.setupPlayer();
-  await TrackPlayer.updateOptions({
-    capabilities: [
-      Capability.Play,
-      Capability.Pause,
-      Capability.SkipToNext,
-      Capability.SkipToPrevious,
-    ],
-  });
-  isPlayerSetup = true;
+export function setupPlayer(): Promise<void> {
+  if (!setupPromise) {
+    setupPromise = TrackPlayer.setupPlayer()
+      .then(() =>
+        TrackPlayer.updateOptions({
+          capabilities: [
+            Capability.Play,
+            Capability.Pause,
+            Capability.SkipToNext,
+            Capability.SkipToPrevious,
+          ],
+          compactCapabilities: [Capability.Play, Capability.Pause],
+        })
+      )
+      .catch((e) => {
+        if (!(e as Error)?.message?.includes('already been initialized')) {
+          setupPromise = null;
+          throw e;
+        }
+      });
+  }
+  return setupPromise;
 }
 
-export async function handleLoad(msg: LoadMessage): Promise<void> {
+export function handleLoad(msg: LoadMessage): Promise<void> {
+  loadPromise = loadPromise.then(() => doLoad(msg)).catch(() => doLoad(msg));
+  return loadPromise;
+}
+
+async function doLoad(msg: LoadMessage): Promise<void> {
   await setupPlayer();
   await TrackPlayer.reset();
   const tracks = msg.tracks.map((t) => ({
