@@ -14,6 +14,7 @@
       "infoPlist": {
         "CFBundleDisplayName": "3ook Reader",
         "ITSAppUsesNonExemptEncryption": false,
+        "UIBackgroundModes": ["audio"],
         "NSAppTransportSecurity": {
           "NSAllowsLocalNetworking": true,
           "NSAllowsArbitraryLoadsForMedia": true
@@ -21,6 +22,10 @@
       }
     },
     "android": {
+      "permissions": [
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"
+      ],
       "package": "land.liker.book3app",
       "adaptiveIcon": {
         "backgroundColor": "#131313",
@@ -57,7 +62,8 @@
           "organization": "likerland-team"
         }
       ],
-      ["expo-audio", { "enableBackgroundPlayback": true }]
+      "expo-audio",
+      "./plugins/withAndroidAudioService"
     ],
     "experiments": {
       "typedRoutes": true,
