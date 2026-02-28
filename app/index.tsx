@@ -9,7 +9,7 @@ export default function App() {
   return (
     <>
       <View style={{ ...styles.topSpacer, height: insets.top }} />
-      <View style={{ ...styles.container, paddingBottom: insets.bottom }}>
+      <View style={styles.container}>
         <WebView
           source={{ uri: 'https://3ook.com?app=1' }}
           originWhitelist={['*']}
