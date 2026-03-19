@@ -2,7 +2,7 @@
   "expo": {
     "name": "3ook.com",
     "slug": "3ook-com-app",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "com.3ook",
