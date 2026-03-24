@@ -70,6 +70,7 @@
       "expo-image",
       "expo-web-browser",
       "expo-asset",
+      "expo-localization",
       [
         "expo-build-properties",
         {

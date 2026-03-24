@@ -1,5 +1,6 @@
 import * as Sentry from "@sentry/react-native";
 import { Slot } from "expo-router";
+import PostHog, { PostHogProvider } from "posthog-react-native";
 
 Sentry.init({
   dsn: "https://316d95879bd0e47063df647af48ceb1f@o149940.ingest.us.sentry.io/4510799071608832",
@@ -15,6 +16,18 @@ Sentry.init({
   // spotlight: __DEV__,
 });
 
+const posthog = new PostHog(
+  "phc_VOXrU28p44Z0coehNjKThwVPK5dO0A6xwQTQqThWI1c",
+  {
+    host: "https://us.i.posthog.com",
+    captureAppLifecycleEvents: true,
+  }
+);
+
 export default function RootLayout() {
-  return <Slot />;
+  return (
+    <PostHogProvider client={posthog}>
+      <Slot />
+    </PostHogProvider>
+  );
 }
