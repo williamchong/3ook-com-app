@@ -8,7 +8,6 @@
     "icon": "./assets/images/icon.png",
     "scheme": "com.3ook",
     "userInterfaceStyle": "automatic",
-    "newArchEnabled": true,
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "land.liker.book3app",
@@ -59,10 +58,16 @@
           "organization": "likerland-team"
         }
       ],
-      ["expo-audio", { "enableBackgroundPlayback": true }],
+      [
+        "expo-audio",
+        {
+          "enableBackgroundPlayback": true
+        }
+      ],
       "expo-font",
       "expo-image",
-      "expo-web-browser"
+      "expo-web-browser",
+      "expo-asset"
     ],
     "experiments": {
       "typedRoutes": true,
