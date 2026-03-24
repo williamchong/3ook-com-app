@@ -66,6 +66,12 @@ function playTrack(p: AudioPlayer, track: QueueTrack): void {
   lastSentState = 'buffering';
   notifyWebView?.({ type: 'playbackState', state: 'buffering' });
 
+  // Pause before replace so that replaceCurrentSource sees wasPlaying=false
+  // and does NOT schedule its own onReady { play() }. Without this, both
+  // the internal auto-resume and our explicit play() below race, and
+  // addPlaybackEndNotification can register on the wrong AVPlayerItem —
+  // causing didJustFinish to never fire.
+  p.pause();
   p.replace({ uri: track.uri, headers: track.headers });
   p.setPlaybackRate(currentRate);
   p.setActiveForLockScreen(true, {
