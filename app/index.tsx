@@ -33,6 +33,11 @@ export default function App() {
     return unsubscribe;
   }, [sendToWebView]);
 
+  // Reload WebView when iOS kills its content process in the background.
+  const handleContentProcessDidTerminate = useCallback(() => {
+    webViewRef.current?.reload();
+  }, []);
+
   const handleMessage = useCallback(
     async (event: WebViewMessageEvent) => {
       try {
@@ -91,6 +96,7 @@ export default function App() {
           allowsInlineMediaPlayback={true}
           pullToRefreshEnabled={true}
           onMessage={handleMessage}
+          onContentProcessDidTerminate={handleContentProcessDidTerminate}
           onError={(e) => console.warn('[WebView error]', e.nativeEvent)}
           onHttpError={(e) => console.warn('[WebView HTTP error]', e.nativeEvent)}
         />
