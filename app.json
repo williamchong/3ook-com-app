@@ -11,6 +11,7 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "land.liker.book3app",
+      "googleServicesFile": "./GoogleService-Info.plist",
       "infoPlist": {
         "CFBundleDisplayName": "3ook Reader",
         "ITSAppUsesNonExemptEncryption": false,
@@ -23,6 +24,7 @@
       }
     },
     "android": {
+      "googleServicesFile": "./google-services.json",
       "package": "land.liker.book3app",
       "adaptiveIcon": {
         "backgroundColor": "#131313",
@@ -67,7 +69,17 @@
       "expo-font",
       "expo-image",
       "expo-web-browser",
-      "expo-asset"
+      "expo-asset",
+      [
+        "expo-build-properties",
+        {
+          "ios": {
+            "useFrameworks": "static",
+            "forceStaticLinking": ["RNFBApp", "RNFBAnalytics"]
+          }
+        }
+      ],
+      "@react-native-firebase/app"
     ],
     "experiments": {
       "typedRoutes": true,

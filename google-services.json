@@ -1,0 +1,40 @@
+{
+  "project_info": {
+    "project_number": "776610946658",
+    "firebase_url": "https://civic-liker.firebaseio.com",
+    "project_id": "civic-liker",
+    "storage_bucket": "civic-liker.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:776610946658:android:e9bd575d9146789967fb3b",
+        "android_client_info": {
+          "package_name": "land.liker.book3app"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "776610946658-1541j8k3ln4i757vgrnir1e0vh2tphb4.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyC4GorAj9FuZdxQbCSv-d9eqrWqvmJpWL0"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "776610946658-1541j8k3ln4i757vgrnir1e0vh2tphb4.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

@@ -14,6 +14,8 @@
   "dependencies": {
     "@expo/vector-icons": "^15.0.3",
     "@preeternal/react-native-cookie-manager": "^6.3.0",
+    "@react-native-firebase/analytics": "^23.8.8",
+    "@react-native-firebase/app": "^23.8.8",
     "@react-navigation/bottom-tabs": "^7.4.0",
     "@react-navigation/elements": "^2.6.3",
     "@react-navigation/native": "^7.1.8",
@@ -21,6 +23,7 @@
     "expo": "^55.0.0",
     "expo-asset": "~55.0.10",
     "expo-audio": "~55.0.9",
+    "expo-build-properties": "~55.0.10",
     "expo-constants": "~55.0.7",
     "expo-font": "~55.0.4",
     "expo-haptics": "~55.0.9",
