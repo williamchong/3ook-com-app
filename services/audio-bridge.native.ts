@@ -37,7 +37,7 @@ interface QueueTrack {
 let playerA: AudioPlayer | null = null;
 let playerB: AudioPlayer | null = null;
 let activeSlot: 'A' | 'B' = 'A';
-let preloadedIndex = -1;
+const preload = { readyIndex: -1, loadingIndex: -1, resetCount: 0 };
 let idleSub: { remove(): void } | null = null;
 
 let queue: QueueTrack[] = [];
@@ -73,27 +73,45 @@ function swapSlots(): void {
 }
 
 function resetIdle(): void {
-  preloadedIndex = -1;
+  preload.readyIndex = -1;
+  preload.loadingIndex = -1;
+  preload.resetCount += 1;
   idleSub?.remove();
   idleSub = null;
 }
 
 function preloadNext(): void {
-  resetIdle();
   const nextIndex = currentIndex + 1;
   if (nextIndex >= queue.length) return;
+  if (preload.loadingIndex === nextIndex || preload.readyIndex === nextIndex) return;
+
+  resetIdle();
 
   const idle = getIdlePlayer();
   if (!idle) return;
 
+  preload.loadingIndex = nextIndex;
   const track = queue[nextIndex];
   idle.pause();
   idle.replace({ uri: track.uri, headers: track.headers });
   idle.setPlaybackRate(currentRate);
 
+  // After a swap the idle player still reports isLoaded from its old track.
+  // Wait until we see a buffering/unloaded state (confirming the new source
+  // started loading) before accepting isLoaded as the preload being ready.
+  // The resetCount guards against stale writes if resetIdle() races
+  // with a late-firing status event.
+  const startResetCount = preload.resetCount;
+  let sawLoading = false;
   idleSub = idle.addListener('playbackStatusUpdate', (status) => {
-    if (status.isLoaded && !status.isBuffering) {
-      preloadedIndex = nextIndex;
+    if (startResetCount !== preload.resetCount) return;
+    if (!status.isLoaded || status.isBuffering) {
+      sawLoading = true;
+      return;
+    }
+    if (sawLoading) {
+      preload.readyIndex = nextIndex;
+      preload.loadingIndex = -1;
       idleSub?.remove();
       idleSub = null;
     }
@@ -142,10 +160,12 @@ function swapToIdle(track: QueueTrack): void {
   swapSlots();
   activatePlayer(getActivePlayer()!, track);
 
-  // Deactivate old player after new one is active (avoids lock screen gap)
+  // Deactivate old player after new one is active (avoids lock screen gap).
+  // We intentionally skip replace(null) — iOS expo-audio throws
+  // ConvertingException when casting null to AudioSource. Pause is sufficient
+  // since the player will get a new source via replace() on next preload.
   if (oldActive) {
     oldActive.setActiveForLockScreen(false);
-    oldActive.replace(null);
   }
 }
 
@@ -187,6 +207,8 @@ async function doLoad(msg: LoadMessage): Promise<void> {
   }
   const headers = cookieHeader ? { Cookie: cookieHeader } : undefined;
 
+  if (!msg.tracks.length || msg.startIndex < 0 || msg.startIndex >= msg.tracks.length) return;
+
   queue = msg.tracks.map((t) => ({
     uri: Platform.OS === 'android' ? stripBlockingParam(t.url) : t.url,
     headers,
@@ -199,6 +221,9 @@ async function doLoad(msg: LoadMessage): Promise<void> {
   currentRate = msg.rate;
   lastFinishTime = 0;
   resetIdle();
+
+  // Idle player may still be buffering its last preload; pause before new queue
+  getIdlePlayer()?.pause();
 
   notifyWebView?.({ type: 'trackChanged', index: currentIndex, lastIndex: -1 });
   playTrack(p, queue[currentIndex]);
@@ -213,17 +238,12 @@ export function handleResume(): void {
 }
 
 export function handleStop(): void {
-  const active = getActivePlayer();
-  const idle = getIdlePlayer();
-  if (active) {
-    active.pause();
-    active.setActiveForLockScreen(false);
-    active.replace(null);
-  }
-  if (idle) {
-    idle.pause();
-    idle.replace(null);
-  }
+  // Skip replace(null) — iOS expo-audio cannot cast null to AudioSource.
+  // Pause is enough; players are reused with replace(source) on next load.
+  getActivePlayer()?.pause();
+  getActivePlayer()?.setActiveForLockScreen(false);
+  getIdlePlayer()?.pause();
+  getIdlePlayer()?.setActiveForLockScreen(false);
   resetIdle();
   currentIndex = -1;
   queue = [];
@@ -237,7 +257,7 @@ export function handleSkipTo(index: number): void {
   const lastIndex = currentIndex;
   currentIndex = index;
 
-  if (preloadedIndex === index) {
+  if (preload.readyIndex === index) {
     swapToIdle(queue[currentIndex]);
   } else {
     resetIdle();
@@ -292,7 +312,7 @@ export function registerEventListeners(sendToWebView: SendToWebView) {
     }
 
     // Trigger preload once playback starts
-    if (state === 'playing' && preloadedIndex < 0) {
+    if (state === 'playing' && preload.readyIndex < 0 && preload.loadingIndex < 0) {
       preloadNext();
     }
 
