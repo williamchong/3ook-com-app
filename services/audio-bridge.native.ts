@@ -4,6 +4,7 @@ import {
   setAudioModeAsync,
   type AudioPlayer,
 } from 'expo-audio';
+import { Platform } from 'react-native';
 
 type SendToWebView = (data: object) => void;
 
@@ -121,7 +122,7 @@ async function doLoad(msg: LoadMessage): Promise<void> {
   const headers = cookieHeader ? { Cookie: cookieHeader } : undefined;
 
   queue = msg.tracks.map((t) => ({
-    uri: stripBlockingParam(t.url),
+    uri: Platform.OS === 'android' ? stripBlockingParam(t.url) : t.url,
     headers,
     title: t.title || msg.metadata.bookTitle,
     artist: msg.metadata.authorName,
