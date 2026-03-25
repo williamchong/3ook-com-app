@@ -3,6 +3,7 @@ import {
   createAudioPlayer,
   setAudioModeAsync,
   type AudioPlayer,
+  type AudioStatus,
 } from 'expo-audio';
 import { Platform } from 'react-native';
 
@@ -33,7 +34,12 @@ interface QueueTrack {
   artworkUrl: string;
 }
 
-let player: AudioPlayer | null = null;
+let playerA: AudioPlayer | null = null;
+let playerB: AudioPlayer | null = null;
+let activeSlot: 'A' | 'B' = 'A';
+let preloadedIndex = -1;
+let idleSub: { remove(): void } | null = null;
+
 let queue: QueueTrack[] = [];
 let currentIndex = -1;
 let currentRate = 1;
@@ -54,16 +60,67 @@ function stripBlockingParam(url: string): string {
   }
 }
 
-function getOrCreatePlayer(): AudioPlayer {
-  if (!player) {
-    player = createAudioPlayer();
+function getActivePlayer(): AudioPlayer | null {
+  return activeSlot === 'A' ? playerA : playerB;
+}
+
+function getIdlePlayer(): AudioPlayer | null {
+  return activeSlot === 'A' ? playerB : playerA;
+}
+
+function swapSlots(): void {
+  activeSlot = activeSlot === 'A' ? 'B' : 'A';
+}
+
+function resetIdle(): void {
+  preloadedIndex = -1;
+  idleSub?.remove();
+  idleSub = null;
+}
+
+function preloadNext(): void {
+  resetIdle();
+  const nextIndex = currentIndex + 1;
+  if (nextIndex >= queue.length) return;
+
+  const idle = getIdlePlayer();
+  if (!idle) return;
+
+  const track = queue[nextIndex];
+  idle.pause();
+  idle.replace({ uri: track.uri, headers: track.headers });
+  idle.setPlaybackRate(currentRate);
+
+  idleSub = idle.addListener('playbackStatusUpdate', (status) => {
+    if (status.isLoaded && !status.isBuffering) {
+      preloadedIndex = nextIndex;
+      idleSub?.remove();
+      idleSub = null;
+    }
+  });
+}
+
+function getOrCreatePlayers(): AudioPlayer {
+  if (!playerA) {
+    playerA = createAudioPlayer();
   }
-  return player;
+  if (!playerB) {
+    playerB = createAudioPlayer();
+  }
+  return getActivePlayer()!;
+}
+
+function activatePlayer(p: AudioPlayer, track: QueueTrack): void {
+  p.setPlaybackRate(currentRate);
+  p.setActiveForLockScreen(true, {
+    title: track.title,
+    artist: track.artist,
+    artworkUrl: track.artworkUrl,
+  });
+  p.play();
 }
 
 function playTrack(p: AudioPlayer, track: QueueTrack): void {
-  // Notify web view immediately so buffering UI shows without waiting
-  // for the first async playbackStatusUpdate callback.
   lastSentState = 'buffering';
   notifyWebView?.({ type: 'playbackState', state: 'buffering' });
 
@@ -74,13 +131,22 @@ function playTrack(p: AudioPlayer, track: QueueTrack): void {
   // causing didJustFinish to never fire.
   p.pause();
   p.replace({ uri: track.uri, headers: track.headers });
-  p.setPlaybackRate(currentRate);
-  p.setActiveForLockScreen(true, {
-    title: track.title,
-    artist: track.artist,
-    artworkUrl: track.artworkUrl,
-  });
-  p.play();
+  activatePlayer(p, track);
+}
+
+function swapToIdle(track: QueueTrack): void {
+  const oldActive = getActivePlayer();
+  // Pause old player first to prevent brief audio overlap during swap
+  oldActive?.pause();
+
+  swapSlots();
+  activatePlayer(getActivePlayer()!, track);
+
+  // Deactivate old player after new one is active (avoids lock screen gap)
+  if (oldActive) {
+    oldActive.setActiveForLockScreen(false);
+    oldActive.replace(null);
+  }
 }
 
 let setupDone: Promise<void> | null = null;
@@ -92,7 +158,7 @@ export function setupPlayer(): Promise<void> {
       shouldPlayInBackground: true,
       interruptionMode: 'doNotMix',
     }).then(() => {
-      getOrCreatePlayer();
+      getOrCreatePlayers();
     });
   }
   return setupDone;
@@ -105,7 +171,7 @@ export function handleLoad(msg: LoadMessage): Promise<void> {
 
 async function doLoad(msg: LoadMessage): Promise<void> {
   await setupPlayer();
-  const p = getOrCreatePlayer();
+  const p = getOrCreatePlayers();
 
   const cookieUrl = msg.tracks[0]?.url;
   let cookieHeader = '';
@@ -132,58 +198,79 @@ async function doLoad(msg: LoadMessage): Promise<void> {
   currentIndex = msg.startIndex;
   currentRate = msg.rate;
   lastFinishTime = 0;
+  resetIdle();
 
   notifyWebView?.({ type: 'trackChanged', index: currentIndex, lastIndex: -1 });
   playTrack(p, queue[currentIndex]);
 }
 
 export function handlePause(): void {
-  player?.pause();
+  getActivePlayer()?.pause();
 }
 
 export function handleResume(): void {
-  player?.play();
+  getActivePlayer()?.play();
 }
 
 export function handleStop(): void {
-  if (player) {
-    player.pause();
-    player.setActiveForLockScreen(false);
-    player.replace(null);
-    currentIndex = -1;
-    queue = [];
-    lastSentState = '';
+  const active = getActivePlayer();
+  const idle = getIdlePlayer();
+  if (active) {
+    active.pause();
+    active.setActiveForLockScreen(false);
+    active.replace(null);
   }
+  if (idle) {
+    idle.pause();
+    idle.replace(null);
+  }
+  resetIdle();
+  currentIndex = -1;
+  queue = [];
+  lastSentState = '';
 }
 
 export function handleSkipTo(index: number): void {
-  if (!player || index < 0 || index >= queue.length) return;
+  const active = getActivePlayer();
+  if (!active || index < 0 || index >= queue.length) return;
 
   const lastIndex = currentIndex;
   currentIndex = index;
+
+  if (preloadedIndex === index) {
+    swapToIdle(queue[currentIndex]);
+  } else {
+    resetIdle();
+    playTrack(active, queue[currentIndex]);
+  }
+
   notifyWebView?.({
     type: 'trackChanged',
     index: currentIndex,
     lastIndex,
   });
-  playTrack(player, queue[currentIndex]);
+  preloadNext();
 }
 
 export function handleSetRate(rate: number): void {
   currentRate = rate;
-  player?.setPlaybackRate(rate);
+  getActivePlayer()?.setPlaybackRate(rate);
+  getIdlePlayer()?.setPlaybackRate(rate);
 }
 
 export async function handleSeekTo(position: number): Promise<void> {
-  await player?.seekTo(position);
+  await getActivePlayer()?.seekTo(position);
 }
 
 export function registerEventListeners(sendToWebView: SendToWebView) {
   notifyWebView = sendToWebView;
   lastSentState = '';
-  const p = getOrCreatePlayer();
+  getOrCreatePlayers();
 
-  const sub = p.addListener('playbackStatusUpdate', (status) => {
+  function onStatus(sourcePlayer: AudioPlayer, status: AudioStatus) {
+    // Ignore events from the idle player
+    if (sourcePlayer !== getActivePlayer()) return;
+
     // Detect playback errors (AVPlayer status = "failed")
     if (status.playbackState === 'failed') {
       notifyWebView?.({ type: 'error', message: 'Playback failed' });
@@ -204,6 +291,11 @@ export function registerEventListeners(sendToWebView: SendToWebView) {
       notifyWebView?.({ type: 'playbackState', state });
     }
 
+    // Trigger preload once playback starts
+    if (state === 'playing' && preloadedIndex < 0) {
+      preloadNext();
+    }
+
     // Notify web app when a track finishes so it can control advancement
     if (status.didJustFinish) {
       const now = Date.now();
@@ -216,10 +308,15 @@ export function registerEventListeners(sendToWebView: SendToWebView) {
         notifyWebView?.({ type: 'ended', index: currentIndex });
       }
     }
-  });
+  }
+
+  const subA = playerA!.addListener('playbackStatusUpdate', (status) => onStatus(playerA!, status));
+  const subB = playerB!.addListener('playbackStatusUpdate', (status) => onStatus(playerB!, status));
 
   return () => {
-    sub.remove();
+    subA.remove();
+    subB.remove();
+    resetIdle();
     notifyWebView = null;
   };
 }
