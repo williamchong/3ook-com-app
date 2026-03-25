@@ -1,0 +1,20 @@
+name: EAS Submit — Android
+
+on:
+  push:
+    branches: ["deploy/android"]
+
+jobs:
+  build_android:
+    name: Build Android app
+    type: build
+    params:
+      platform: android
+      profile: production
+
+  submit_android:
+    name: Submit to Google Play Internal Testing
+    needs: [build_android]
+    type: submit
+    params:
+      build_id: ${{ needs.build_android.outputs.build_id }}
