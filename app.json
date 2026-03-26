@@ -76,7 +76,11 @@
         {
           "ios": {
             "useFrameworks": "static",
-            "forceStaticLinking": ["RNFBApp", "RNFBAnalytics"]
+            "forceStaticLinking": ["RNFBApp", "RNFBAnalytics"],
+            "ccacheEnabled": true
+          },
+          "android": {
+            "buildArchs": ["arm64-v8a"]
           }
         }
       ],

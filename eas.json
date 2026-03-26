@@ -6,13 +6,16 @@
   "build": {
     "development": {
       "developmentClient": true,
-      "distribution": "internal"
+      "distribution": "internal",
+      "cache": { "key": "c548e7c" }
     },
     "preview": {
-      "distribution": "internal"
+      "distribution": "internal",
+      "cache": { "key": "c548e7c" }
     },
     "production": {
-      "autoIncrement": true
+      "autoIncrement": true,
+      "cache": { "key": "c548e7c" }
     }
   },
   "submit": {
