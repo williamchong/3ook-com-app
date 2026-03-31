@@ -431,7 +431,7 @@ export function registerEventListeners(sendToWebView: SendToWebView) {
       preloadNext();
     }
 
-    // Notify web app when a track finishes so it can control advancement
+    // Handle track finish
     if (status.didJustFinish) {
       audible = false;
       const now = Date.now();
@@ -440,6 +440,11 @@ export function registerEventListeners(sendToWebView: SendToWebView) {
 
       if (currentIndex >= queue.length - 1) {
         notifyWebView?.({ type: 'queueEnded' });
+      } else if (Platform.OS === 'android') {
+        // Auto-advance natively on Android because the WebView JS execution
+        // is suspended when the screen is locked, so it cannot respond to
+        // an 'ended' event with a 'skipTo' message.
+        handleSkipTo(currentIndex + 1);
       } else {
         notifyWebView?.({ type: 'ended', index: currentIndex });
       }
