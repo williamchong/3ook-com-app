@@ -5,7 +5,7 @@ import {
   type AudioPlayer,
   type AudioStatus,
 } from 'expo-audio';
-import { Platform } from 'react-native';
+import { AppState, Platform } from 'react-native';
 
 type SendToWebView = (data: object) => void;
 
@@ -454,9 +454,26 @@ export function registerEventListeners(sendToWebView: SendToWebView) {
   const subA = playerA!.addListener('playbackStatusUpdate', (status) => onStatus(playerA!, status));
   const subB = playerB!.addListener('playbackStatusUpdate', (status) => onStatus(playerB!, status));
 
+  // On Android, re-sync the WebView when the app returns to the foreground.
+  // injectJavaScript calls made while the WebView was suspended are dropped,
+  // so the web app may have stale track/state info after lock screen playback.
+  const appStateSub = Platform.OS === 'android'
+    ? AppState.addEventListener('change', (nextAppState) => {
+        if (nextAppState === 'active' && currentIndex >= 0) {
+          const p = getActivePlayer();
+          const currentState = p && (!p.isLoaded || p.isBuffering)
+            ? 'buffering'
+            : p?.playing ? 'playing' : 'paused';
+          notifyWebView?.({ type: 'trackChanged', index: currentIndex, lastIndex: -1 });
+          notifyWebView?.({ type: 'playbackState', state: currentState });
+        }
+      })
+    : null;
+
   return () => {
     subA.remove();
     subB.remove();
+    appStateSub?.remove();
     clearStuckTimer();
     resetIdle();
     active = false;
