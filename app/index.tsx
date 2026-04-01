@@ -2,6 +2,7 @@ import { useEffect, useRef, useCallback } from 'react';
 import { Platform, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import WebView, { type WebViewMessageEvent } from 'react-native-webview';
+import type { ShouldStartLoadRequest } from 'react-native-webview/lib/WebViewTypes';
 import * as Application from 'expo-application';
 
 import packageJson from '../package.json';
@@ -17,6 +18,7 @@ import {
   registerEventListeners,
   type LoadMessage,
 } from '../services/audio-bridge';
+import { isDeepLink, openDeepLink } from '../services/url-bridge';
 
 // e.g. 3ook-com-app/1.1.0 (iOS 18.0) Build/42
 const USER_AGENT = (() => {
@@ -47,6 +49,21 @@ export default function App() {
   const handleContentProcessDidTerminate = useCallback(() => {
     webViewRef.current?.reload();
   }, []);
+
+  // Intercept wallet deep links (wc:, metamask:, etc.) that JS SDKs
+  // trigger via navigation rather than postMessage.
+  const handleNavigationRequest = useCallback(
+    (request: ShouldStartLoadRequest) => {
+      if (isDeepLink(request.url)) {
+        openDeepLink(request.url).catch((e) =>
+          console.warn('[deep link] failed to open:', request.url, e)
+        );
+        return false;
+      }
+      return true;
+    },
+    []
+  );
 
   const handleMessage = useCallback(
     async (event: WebViewMessageEvent) => {
@@ -105,6 +122,7 @@ export default function App() {
           mediaPlaybackRequiresUserAction={false}
           allowsInlineMediaPlayback={true}
           pullToRefreshEnabled={true}
+          onShouldStartLoadWithRequest={handleNavigationRequest}
           onMessage={handleMessage}
           onContentProcessDidTerminate={handleContentProcessDidTerminate}
           onError={(e) => console.warn('[WebView error]', e.nativeEvent)}
