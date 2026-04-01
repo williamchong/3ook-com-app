@@ -11,7 +11,7 @@ import {
   registerEventListeners,
   setupPlayer,
 } from '../services/audio-bridge';
-import { dispatch, registerHandlers } from '../services/bridge-dispatcher';
+import { clearHandlers, dispatch, registerHandlers } from '../services/bridge-dispatcher';
 import { getIdentityHandlers } from '../services/identity-bridge';
 import { posthog } from '../services/posthog';
 import { isDeepLink, openDeepLink } from '../services/url-bridge';
@@ -43,7 +43,10 @@ export default function App() {
 
     setupPlayer();
     const unsubscribe = registerEventListeners(sendToWebView);
-    return unsubscribe;
+    return () => {
+      unsubscribe();
+      clearHandlers();
+    };
   }, [sendToWebView]);
 
   // Reload WebView when iOS kills its content process in the background.

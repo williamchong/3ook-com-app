@@ -1,3 +1,5 @@
+import type { BridgeHandlerMap } from './bridge-dispatcher';
+
 export interface LoadMessage {
   tracks: { index: number; url: string; title?: string }[];
   startIndex: number;
@@ -17,7 +19,5 @@ export function handleStop(): void;
 export function handleSkipTo(index: number): void;
 export function handleSetRate(rate: number): void;
 export function handleSeekTo(position: number): Promise<void>;
-import type { BridgeHandlerMap } from './bridge-dispatcher';
-
 export function getAudioHandlers(): BridgeHandlerMap;
 export function registerEventListeners(sendToWebView: (data: object) => void): () => void;

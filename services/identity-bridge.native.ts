@@ -23,11 +23,12 @@ export function getIdentityHandlers(posthog: PostHog): BridgeHandlerMap {
         login_method: loginMethod ?? null,
       });
 
+      const fa = analytics();
       await Promise.all([
-        analytics().setUserId(userId),
-        analytics().setUserProperties({
+        fa.setUserId(userId),
+        fa.setUserProperties({
           is_liker_plus: String(isLikerPlus),
-          login_method: loginMethod || '',
+          login_method: loginMethod ?? '',
         }),
       ]);
 
