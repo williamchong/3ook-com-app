@@ -25,6 +25,26 @@ index 72a6e9e..3629367 100644
        } else {
          AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK
        }
+diff --git a/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioPlayer.kt b/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioPlayer.kt
+index f7c4364..1c9270c 100644
+--- a/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioPlayer.kt
++++ b/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioPlayer.kt
+@@ -7,6 +7,7 @@ import android.media.audiofx.Visualizer
+ import android.util.Log
+ import androidx.core.content.ContextCompat
+ import androidx.media3.common.AudioAttributes
++import androidx.media3.common.C
+ import androidx.media3.common.MediaItem
+ import androidx.media3.common.PlaybackParameters
+ import androidx.media3.common.Player
+@@ -50,6 +51,7 @@ class AudioPlayer(
+   ExoPlayer.Builder(context)
+     .setLooper(context.mainLooper)
+     .setAudioAttributes(AudioAttributes.DEFAULT, false)
++    .setWakeMode(C.WAKE_MODE_NETWORK)
+     .setSeekForwardIncrementMs(SEEK_JUMP_INTERVAL_MS)
+     .setSeekBackIncrementMs(SEEK_JUMP_INTERVAL_MS)
+     .apply {
 diff --git a/node_modules/expo-audio/android/src/main/java/expo/modules/audio/service/BaseServiceConnection.kt b/node_modules/expo-audio/android/src/main/java/expo/modules/audio/service/BaseServiceConnection.kt
 index d3802fb..d2a054d 100644
 --- a/node_modules/expo-audio/android/src/main/java/expo/modules/audio/service/BaseServiceConnection.kt

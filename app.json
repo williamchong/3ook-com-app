@@ -26,6 +26,7 @@
     "android": {
       "googleServicesFile": "./google-services.json",
       "package": "land.liker.book3app",
+      "permissions": ["android.permission.WAKE_LOCK"],
       "adaptiveIcon": {
         "backgroundColor": "#131313",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
