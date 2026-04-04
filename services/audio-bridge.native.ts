@@ -48,16 +48,12 @@ let loadPromise: Promise<void> = Promise.resolve();
 let notifyWebView: SendToWebView | null = null;
 let lastSentState = '';
 
-// Auto-resume & stuck detection state
-const MAX_AUTO_RESUME_RETRIES = 3;
+// Stuck detection state
 // Longer than web player's 5s because iOS uses blocking=1 URLs where the
 // server generates the full TTS audio before responding.
 const STUCK_TIMEOUT_MS = 15000;
 let active = false;
-let userPaused = false;
 let audible = false;
-let autoResumeRetries = 0;
-let autoResumeTimer: ReturnType<typeof setTimeout> | null = null;
 let stuckTimer: ReturnType<typeof setTimeout> | null = null;
 let stuckRetried = false;
 let errored = false;
@@ -142,13 +138,6 @@ function getOrCreatePlayers(): AudioPlayer {
   return getActivePlayer()!;
 }
 
-function clearAutoResumeTimer(): void {
-  if (autoResumeTimer) {
-    clearTimeout(autoResumeTimer);
-    autoResumeTimer = null;
-  }
-}
-
 function clearStuckTimer(): void {
   if (stuckTimer) {
     clearTimeout(stuckTimer);
@@ -160,8 +149,6 @@ function resetRecoveryState(): void {
   audible = false;
   errored = false;
   stuckRetried = false;
-  autoResumeRetries = 0;
-  clearAutoResumeTimer();
 }
 
 function armStuckTimer(): void {
@@ -284,7 +271,6 @@ async function doLoad(msg: LoadMessage): Promise<void> {
   currentRate = msg.rate;
   lastFinishTime = 0;
   active = true;
-  userPaused = false;
   clearStuckTimer();
   resetIdle();
 
@@ -297,28 +283,20 @@ async function doLoad(msg: LoadMessage): Promise<void> {
 
 export function handlePause(): void {
   active = false;
-  userPaused = true;
   audible = false;
-  clearAutoResumeTimer();
   clearStuckTimer();
   getActivePlayer()?.pause();
 }
 
 export function handleResume(): void {
-  clearAutoResumeTimer();
-  autoResumeRetries = 0;
   active = true;
-  userPaused = false;
   errored = false;
   stuckRetried = false;
-  // No armStuckTimer() — on resume the source is already buffered.
-  // OS-interruption stalls are handled by the auto-resume retry loop.
   getActivePlayer()?.play();
 }
 
 export function handleStop(): void {
   active = false;
-  userPaused = false;
   resetRecoveryState();
   clearStuckTimer();
   // Skip replace(null) — iOS expo-audio cannot cast null to AudioSource.
@@ -337,8 +315,8 @@ export function handleSkipTo(index: number, { resetFinishGuard = true } = {}): v
   const player = getActivePlayer();
   if (!player || index < 0 || index >= queue.length) return;
   active = true;
-  userPaused = false;
   if (resetFinishGuard) lastFinishTime = 0;
+  lastFinishTime = 0;
 
   const lastIndex = currentIndex;
   currentIndex = index;
@@ -401,7 +379,6 @@ export function registerEventListeners(sendToWebView: SendToWebView) {
     if (status.playbackState === 'failed') {
       errored = true;
       clearStuckTimer();
-      clearAutoResumeTimer();
       notifyWebView?.({ type: 'error', message: 'Playback failed' });
       return;
     }
@@ -420,30 +397,18 @@ export function registerEventListeners(sendToWebView: SendToWebView) {
       notifyWebView?.({ type: 'playbackState', state });
     }
 
-    // Audio reached playing state — clear stuck timer, reset resume retries
+    // NOTE: Do NOT add auto-resume logic here (e.g. detecting unexpected pauses
+    // and calling play() after a timeout). expo-audio already handles OS audio
+    // interruption recovery natively — iOS via AVAudioSession.interruptionNotification
+    // with shouldResume, Android via AUDIOFOCUS_GAIN. A custom auto-resume cannot
+    // distinguish lock screen pause (user intent) from OS interruption, causing
+    // lock screen pause to be ineffective and the queue to keep advancing.
+
+    // Audio reached playing state — clear stuck timer
     if (state === 'playing') {
       audible = true;
       errored = false;
-      autoResumeRetries = 0;
       clearStuckTimer();
-    }
-
-    // Detect unexpected pause (OS interruption: phone call, Siri, other app).
-    // The `audible` guard ensures this only fires on the playing→paused transition,
-    // not on every subsequent paused status tick.
-    if (state === 'paused' && audible && !userPaused && active && !errored
-        && !autoResumeTimer && !status.didJustFinish) {
-      audible = false;
-      if (autoResumeRetries < MAX_AUTO_RESUME_RETRIES) {
-        autoResumeRetries += 1;
-        autoResumeTimer = setTimeout(() => {
-          autoResumeTimer = null;
-          if (active && !audible && !userPaused && !errored) {
-            audible = true; // re-arm so next paused status can trigger another retry
-            getActivePlayer()?.play();
-          }
-        }, 1000);
-      }
     }
 
     // Trigger preload once playback starts
@@ -495,7 +460,6 @@ export function registerEventListeners(sendToWebView: SendToWebView) {
     clearStuckTimer();
     resetIdle();
     active = false;
-    userPaused = false;
     resetRecoveryState();
     notifyWebView = null;
   };
