@@ -19,7 +19,7 @@ class BatteryOptimizationModule : Module() {
     }
 
     Function("requestExemption") {
-      val context = appContext.reactContext ?: return@Function
+      val context = appContext.reactContext ?: return@Function Unit
       val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
         data = Uri.parse("package:${context.packageName}")
         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)

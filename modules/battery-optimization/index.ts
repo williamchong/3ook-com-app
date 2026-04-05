@@ -1,17 +1,14 @@
-import { requireNativeModule, Platform } from 'expo-modules-core';
+import { Platform, requireOptionalNativeModule } from 'expo-modules-core';
+
+interface BatteryOptimizationModule {
+  isExempt(): boolean;
+  requestExemption(): void;
+}
 
 const NativeModule =
   Platform.OS === 'android'
-    ? requireNativeModule('BatteryOptimization')
+    ? requireOptionalNativeModule<BatteryOptimizationModule>('BatteryOptimization')
     : null;
-
-/**
- * Returns true if the app is already exempt from battery optimization.
- * Always returns true on non-Android platforms.
- */
-export function isExemptFromBatteryOptimization(): boolean {
-  return NativeModule?.isExempt() ?? true;
-}
 
 /**
  * Shows the system dialog asking the user to exempt the app from battery
