@@ -7,6 +7,11 @@ import {
 } from 'expo-audio';
 import { AppState, Platform } from 'react-native';
 
+import {
+  addInterruptionBeganListener,
+  addInterruptionEndedListener,
+} from '../modules/audio-interruption';
+
 import type { SendToWebView, BridgeHandlerMap } from './bridge-dispatcher';
 
 interface TrackInfo {
@@ -394,13 +399,6 @@ export function registerEventListeners(sendToWebView: SendToWebView) {
       notifyWebView?.({ type: 'playbackState', state });
     }
 
-    // NOTE: Do NOT add auto-resume logic here (e.g. detecting unexpected pauses
-    // and calling play() after a timeout). expo-audio already handles OS audio
-    // interruption recovery natively — iOS via AVAudioSession.interruptionNotification
-    // with shouldResume, Android via AUDIOFOCUS_GAIN. A custom auto-resume cannot
-    // distinguish lock screen pause (user intent) from OS interruption, causing
-    // lock screen pause to be ineffective and the queue to keep advancing.
-
     // Audio reached playing state — clear stuck timer
     if (state === 'playing') {
       audible = true;
@@ -436,6 +434,24 @@ export function registerEventListeners(sendToWebView: SendToWebView) {
   const subA = playerA!.addListener('playbackStatusUpdate', (status) => onStatus(playerA!, status));
   const subB = playerB!.addListener('playbackStatusUpdate', (status) => onStatus(playerB!, status));
 
+  // Resume after OS audio interruption (phone call, Siri, other app audio).
+  // expo-audio's native handler only resumes when iOS sets shouldResume=true,
+  // which doesn't cover all interruption types. We always resume for audiobook
+  // playback. Lock screen pause is a remote command (MPRemoteCommandCenter),
+  // NOT an interruption, so this does not interfere with user-initiated pause.
+  // The `wasPlayingBeforeInterruption` guard prevents resuming if the user had
+  // already paused from lock screen before the interruption occurred.
+  let wasPlayingBeforeInterruption = false;
+  const interruptionBeganSub = addInterruptionBeganListener(() => {
+    wasPlayingBeforeInterruption = active && audible;
+  });
+  const interruptionEndedSub = addInterruptionEndedListener((_event) => {
+    if (wasPlayingBeforeInterruption && active && !errored) {
+      getActivePlayer()?.play();
+    }
+    wasPlayingBeforeInterruption = false;
+  });
+
   // On Android, re-sync the WebView when the app returns to the foreground.
   // injectJavaScript calls made while the WebView was suspended are dropped,
   // so the web app may have stale track/state info after lock screen playback.
@@ -453,6 +469,8 @@ export function registerEventListeners(sendToWebView: SendToWebView) {
   return () => {
     subA.remove();
     subB.remove();
+    interruptionBeganSub.remove();
+    interruptionEndedSub.remove();
     appStateSub?.remove();
     clearStuckTimer();
     resetIdle();
