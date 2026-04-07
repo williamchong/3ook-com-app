@@ -322,7 +322,6 @@ export function handleSkipTo(index: number, { resetFinishGuard = true } = {}): v
   if (!player || index < 0 || index >= queue.length) return;
   active = true;
   if (resetFinishGuard) lastFinishTime = 0;
-  lastFinishTime = 0;
 
   const lastIndex = currentIndex;
   currentIndex = index;
@@ -424,13 +423,11 @@ export function registerEventListeners(sendToWebView: SendToWebView) {
 
       if (currentIndex >= queue.length - 1) {
         notifyWebView?.({ type: 'queueEnded' });
-      } else if (Platform.OS === 'android') {
-        // Auto-advance natively on Android because the WebView JS execution
-        // is suspended when the screen is locked, so it cannot respond to
-        // an 'ended' event with a 'skipTo' message.
-        handleSkipTo(currentIndex + 1, { resetFinishGuard: false });
       } else {
-        notifyWebView?.({ type: 'ended', index: currentIndex });
+        // Auto-advance natively because WebView JS execution is suspended
+        // when the app is backgrounded or the screen is locked, so it
+        // cannot respond to an 'ended' event with a 'skipTo' message.
+        handleSkipTo(currentIndex + 1, { resetFinishGuard: false });
       }
     }
   }
@@ -456,26 +453,24 @@ export function registerEventListeners(sendToWebView: SendToWebView) {
     wasPlayingBeforeInterruption = false;
   });
 
-  // On Android, re-sync the WebView when the app returns to the foreground.
+  // Re-sync the WebView when the app returns to the foreground.
   // injectJavaScript calls made while the WebView was suspended are dropped,
-  // so the web app may have stale track/state info after lock screen playback.
-  const appStateSub = Platform.OS === 'android'
-    ? AppState.addEventListener('change', (nextAppState) => {
-        if (nextAppState === 'active' && currentIndex >= 0) {
-          notifyWebView?.({ type: 'trackChanged', index: currentIndex, lastIndex: -1 });
-          if (lastSentState) {
-            notifyWebView?.({ type: 'playbackState', state: lastSentState });
-          }
-        }
-      })
-    : null;
+  // so the web app may have stale track/state info after background playback.
+  const appStateSub = AppState.addEventListener('change', (nextAppState) => {
+    if (nextAppState === 'active' && currentIndex >= 0) {
+      notifyWebView?.({ type: 'trackChanged', index: currentIndex, lastIndex: -1 });
+      if (lastSentState) {
+        notifyWebView?.({ type: 'playbackState', state: lastSentState });
+      }
+    }
+  });
 
   return () => {
     subA.remove();
     subB.remove();
     interruptionBeganSub.remove();
     interruptionEndedSub.remove();
-    appStateSub?.remove();
+    appStateSub.remove();
     clearStuckTimer();
     resetIdle();
     active = false;
