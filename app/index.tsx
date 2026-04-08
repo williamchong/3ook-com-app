@@ -94,6 +94,7 @@ export default function App() {
           mediaPlaybackRequiresUserAction={false}
           allowsInlineMediaPlayback={true}
           pullToRefreshEnabled={true}
+          webviewDebuggingEnabled={__DEV__}
           onShouldStartLoadWithRequest={handleNavigationRequest}
           onMessage={handleMessage}
           onContentProcessDidTerminate={handleContentProcessDidTerminate}
