@@ -1,5 +1,5 @@
 import * as Application from 'expo-application';
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Platform, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import WebView, { type WebViewMessageEvent } from 'react-native-webview';
@@ -15,6 +15,7 @@ import { clearHandlers, dispatch, registerHandlers } from '../services/bridge-di
 import { getIdentityHandlers } from '../services/identity-bridge';
 import { posthog } from '../services/posthog';
 import { isDeepLink, openDeepLink } from '../services/url-bridge';
+import { getInitialURL, saveLastURL } from '../services/url-storage';
 
 // e.g. 3ook-com-app/1.1.0 (iOS 18.0) Build/42
 const USER_AGENT = (() => {
@@ -28,6 +29,11 @@ const USER_AGENT = (() => {
 export default function App() {
   const insets = useSafeAreaInsets();
   const webViewRef = useRef<WebView>(null);
+  const [initialURL, setInitialURL] = useState<string | null>(null);
+
+  useEffect(() => {
+    getInitialURL().then(setInitialURL);
+  }, []);
 
   const sendToWebView = useCallback((data: object) => {
     const json = JSON.stringify(data);
@@ -69,6 +75,24 @@ export default function App() {
     []
   );
 
+  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const handleNavigationStateChange = useCallback(
+    (navState: { url?: string }) => {
+      if (!navState.url) return;
+      if (saveTimer.current) clearTimeout(saveTimer.current);
+      saveTimer.current = setTimeout(() => saveLastURL(navState.url!), 1500);
+    },
+    []
+  );
+  useEffect(() => {
+    return () => {
+      if (saveTimer.current) {
+        clearTimeout(saveTimer.current);
+        saveTimer.current = null;
+      }
+    };
+  }, []);
+
   const handleMessage = useCallback(
     async (event: WebViewMessageEvent) => {
       try {
@@ -82,25 +106,28 @@ export default function App() {
 
   return (
     <>
-      <View style={{ ...styles.topSpacer, height: insets.top }} />
+      <View style={[styles.topSpacer, { height: insets.top }]} />
       <View style={styles.container}>
-        <WebView
-          ref={webViewRef}
-          source={{ uri: 'https://3ook.com?app=1' }}
-          originWhitelist={['*']}
-          style={styles.webview}
-          userAgent={USER_AGENT}
-          sharedCookiesEnabled={true}
-          mediaPlaybackRequiresUserAction={false}
-          allowsInlineMediaPlayback={true}
-          pullToRefreshEnabled={true}
-          webviewDebuggingEnabled={__DEV__}
-          onShouldStartLoadWithRequest={handleNavigationRequest}
-          onMessage={handleMessage}
-          onContentProcessDidTerminate={handleContentProcessDidTerminate}
-          onError={(e) => console.warn('[WebView error]', e.nativeEvent)}
-          onHttpError={(e) => console.warn('[WebView HTTP error]', e.nativeEvent)}
-        />
+        {initialURL && (
+          <WebView
+            ref={webViewRef}
+            source={{ uri: initialURL }}
+            originWhitelist={['*']}
+            style={styles.webview}
+            userAgent={USER_AGENT}
+            sharedCookiesEnabled={true}
+            mediaPlaybackRequiresUserAction={false}
+            allowsInlineMediaPlayback={true}
+            pullToRefreshEnabled={true}
+            webviewDebuggingEnabled={__DEV__}
+            onShouldStartLoadWithRequest={handleNavigationRequest}
+            onNavigationStateChange={handleNavigationStateChange}
+            onMessage={handleMessage}
+            onContentProcessDidTerminate={handleContentProcessDidTerminate}
+            onError={(e) => console.warn('[WebView error]', e.nativeEvent)}
+            onHttpError={(e) => console.warn('[WebView HTTP error]', e.nativeEvent)}
+          />
+        )}
       </View>
     </>
   );
