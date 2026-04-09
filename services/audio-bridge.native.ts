@@ -59,7 +59,6 @@ let lastSentState = '';
 // server generates the full TTS audio before responding.
 const STUCK_TIMEOUT_MS = 15000;
 let active = false;
-let audible = false;
 let stuckTimer: ReturnType<typeof setTimeout> | null = null;
 let stuckRetried = false;
 let errored = false;
@@ -152,7 +151,6 @@ function clearStuckTimer(): void {
 }
 
 function resetRecoveryState(): void {
-  audible = false;
   errored = false;
   stuckRetried = false;
 }
@@ -160,7 +158,7 @@ function resetRecoveryState(): void {
 function armStuckTimer(): void {
   clearStuckTimer();
   stuckTimer = setTimeout(() => {
-    if (audible || !active || stuckRetried || errored) return;
+    if (lastSentState === 'playing' || !active || stuckRetried || errored) return;
     console.warn('Audio stuck — retrying playback');
     stuckRetried = true;
     const p = getActivePlayer();
@@ -170,7 +168,7 @@ function armStuckTimer(): void {
     p.play();
     stuckTimer = setTimeout(() => {
       stuckTimer = null;
-      if (audible || !active || errored) return;
+      if (lastSentState === 'playing' || !active || errored) return;
       console.warn('Audio stuck — retry failed');
       errored = true;
       notifyWebView?.({ type: 'error', message: 'Playback stuck' });
@@ -289,7 +287,6 @@ async function doLoad(msg: LoadMessage): Promise<void> {
 
 export function handlePause(): void {
   active = false;
-  audible = false;
   clearStuckTimer();
   getActivePlayer()?.pause();
 }
@@ -404,7 +401,6 @@ export function registerEventListeners(sendToWebView: SendToWebView) {
 
     // Audio reached playing state — clear stuck timer
     if (state === 'playing') {
-      audible = true;
       errored = false;
       clearStuckTimer();
     }
@@ -416,7 +412,6 @@ export function registerEventListeners(sendToWebView: SendToWebView) {
 
     // Handle track finish
     if (status.didJustFinish) {
-      audible = false;
       const now = Date.now();
       if (now - lastFinishTime < 500) return;
       lastFinishTime = now;
@@ -441,10 +436,13 @@ export function registerEventListeners(sendToWebView: SendToWebView) {
   // playback. Lock screen pause is a remote command (MPRemoteCommandCenter),
   // NOT an interruption, so this does not interfere with user-initiated pause.
   // The `wasPlayingBeforeInterruption` guard prevents resuming if the user had
-  // already paused from lock screen before the interruption occurred.
+  // already paused from lock screen before the interruption occurred. We check
+  // `lastSentState` (from the player status listener) rather than the JS-only
+  // `active` flag, because lock-screen pause goes straight to the native
+  // player without calling handlePause().
   let wasPlayingBeforeInterruption = false;
   const interruptionBeganSub = addInterruptionBeganListener(() => {
-    wasPlayingBeforeInterruption = active && audible;
+    wasPlayingBeforeInterruption = lastSentState === 'playing';
   });
   const interruptionEndedSub = addInterruptionEndedListener((_event) => {
     if (wasPlayingBeforeInterruption && active && !errored) {
