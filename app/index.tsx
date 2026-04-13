@@ -1,9 +1,12 @@
 import * as Application from 'expo-application';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Platform, StyleSheet, View } from 'react-native';
+import { BackHandler, Platform, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import WebView, { type WebViewMessageEvent } from 'react-native-webview';
-import type { ShouldStartLoadRequest } from 'react-native-webview/lib/WebViewTypes';
+import type {
+  ShouldStartLoadRequest,
+  WebViewNavigation,
+} from 'react-native-webview/lib/WebViewTypes';
 
 import packageJson from '../package.json';
 import {
@@ -29,6 +32,7 @@ const USER_AGENT = (() => {
 export default function App() {
   const insets = useSafeAreaInsets();
   const webViewRef = useRef<WebView>(null);
+  const canGoBackRef = useRef(false);
   const [initialURL, setInitialURL] = useState<string | null>(null);
 
   useEffect(() => {
@@ -77,10 +81,11 @@ export default function App() {
 
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const handleNavigationStateChange = useCallback(
-    (navState: { url?: string }) => {
+    (navState: WebViewNavigation) => {
+      canGoBackRef.current = navState.canGoBack;
       if (!navState.url) return;
       if (saveTimer.current) clearTimeout(saveTimer.current);
-      saveTimer.current = setTimeout(() => saveLastURL(navState.url!), 1500);
+      saveTimer.current = setTimeout(() => saveLastURL(navState.url), 1500);
     },
     []
   );
@@ -91,6 +96,18 @@ export default function App() {
         saveTimer.current = null;
       }
     };
+  }, []);
+
+  useEffect(() => {
+    if (Platform.OS !== 'android') return;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (canGoBackRef.current) {
+        webViewRef.current?.goBack();
+        return true;
+      }
+      return false;
+    });
+    return () => sub.remove();
   }, []);
 
   const handleMessage = useCallback(
@@ -119,6 +136,7 @@ export default function App() {
             mediaPlaybackRequiresUserAction={false}
             allowsInlineMediaPlayback={true}
             pullToRefreshEnabled={true}
+            allowsBackForwardNavigationGestures={true}
             webviewDebuggingEnabled={__DEV__}
             onShouldStartLoadWithRequest={handleNavigationRequest}
             onNavigationStateChange={handleNavigationStateChange}
