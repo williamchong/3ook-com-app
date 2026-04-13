@@ -15,6 +15,7 @@ import {
   setupPlayer,
 } from '../services/audio-bridge';
 import { clearHandlers, dispatch, registerHandlers } from '../services/bridge-dispatcher';
+import { getDownloadHandlers } from '../services/download-bridge';
 import { getIdentityHandlers } from '../services/identity-bridge';
 import { posthog } from '../services/posthog';
 import { isDeepLink, openDeepLink } from '../services/url-bridge';
@@ -49,6 +50,7 @@ export default function App() {
 
   useEffect(() => {
     registerHandlers(getAudioHandlers());
+    registerHandlers(getDownloadHandlers());
     registerHandlers(getIdentityHandlers(posthog));
 
     setupPlayer();
