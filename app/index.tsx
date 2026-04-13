@@ -154,6 +154,7 @@ export default function App() {
             allowsInlineMediaPlayback={true}
             pullToRefreshEnabled={true}
             allowsBackForwardNavigationGestures={true}
+            limitsNavigationsToAppBoundDomains={Platform.OS === 'ios'}
             webviewDebuggingEnabled={__DEV__}
             onShouldStartLoadWithRequest={handleNavigationRequest}
             onNavigationStateChange={handleNavigationStateChange}
