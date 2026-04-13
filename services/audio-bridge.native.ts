@@ -8,6 +8,11 @@ import {
 import { AppState, Platform } from 'react-native';
 import { requestBatteryOptimizationExemption } from '../modules/battery-optimization';
 
+import {
+  addInterruptionBeganListener,
+  addInterruptionEndedListener,
+} from '../modules/audio-interruption';
+
 import type { SendToWebView, BridgeHandlerMap } from './bridge-dispatcher';
 
 interface TrackInfo {
@@ -54,7 +59,6 @@ let lastSentState = '';
 // server generates the full TTS audio before responding.
 const STUCK_TIMEOUT_MS = 15000;
 let active = false;
-let audible = false;
 let stuckTimer: ReturnType<typeof setTimeout> | null = null;
 let stuckRetried = false;
 let errored = false;
@@ -147,7 +151,6 @@ function clearStuckTimer(): void {
 }
 
 function resetRecoveryState(): void {
-  audible = false;
   errored = false;
   stuckRetried = false;
 }
@@ -155,7 +158,7 @@ function resetRecoveryState(): void {
 function armStuckTimer(): void {
   clearStuckTimer();
   stuckTimer = setTimeout(() => {
-    if (audible || !active || stuckRetried || errored) return;
+    if (lastSentState === 'playing' || !active || stuckRetried || errored) return;
     console.warn('Audio stuck — retrying playback');
     stuckRetried = true;
     const p = getActivePlayer();
@@ -165,7 +168,7 @@ function armStuckTimer(): void {
     p.play();
     stuckTimer = setTimeout(() => {
       stuckTimer = null;
-      if (audible || !active || errored) return;
+      if (lastSentState === 'playing' || !active || errored) return;
       console.warn('Audio stuck — retry failed');
       errored = true;
       notifyWebView?.({ type: 'error', message: 'Playback stuck' });
@@ -284,7 +287,6 @@ async function doLoad(msg: LoadMessage): Promise<void> {
 
 export function handlePause(): void {
   active = false;
-  audible = false;
   clearStuckTimer();
   getActivePlayer()?.pause();
 }
@@ -317,7 +319,6 @@ export function handleSkipTo(index: number, { resetFinishGuard = true } = {}): v
   if (!player || index < 0 || index >= queue.length) return;
   active = true;
   if (resetFinishGuard) lastFinishTime = 0;
-  lastFinishTime = 0;
 
   const lastIndex = currentIndex;
   currentIndex = index;
@@ -398,16 +399,8 @@ export function registerEventListeners(sendToWebView: SendToWebView) {
       notifyWebView?.({ type: 'playbackState', state });
     }
 
-    // NOTE: Do NOT add auto-resume logic here (e.g. detecting unexpected pauses
-    // and calling play() after a timeout). expo-audio already handles OS audio
-    // interruption recovery natively — iOS via AVAudioSession.interruptionNotification
-    // with shouldResume, Android via AUDIOFOCUS_GAIN. A custom auto-resume cannot
-    // distinguish lock screen pause (user intent) from OS interruption, causing
-    // lock screen pause to be ineffective and the queue to keep advancing.
-
     // Audio reached playing state — clear stuck timer
     if (state === 'playing') {
-      audible = true;
       errored = false;
       clearStuckTimer();
     }
@@ -419,20 +412,17 @@ export function registerEventListeners(sendToWebView: SendToWebView) {
 
     // Handle track finish
     if (status.didJustFinish) {
-      audible = false;
       const now = Date.now();
       if (now - lastFinishTime < 500) return;
       lastFinishTime = now;
 
       if (currentIndex >= queue.length - 1) {
         notifyWebView?.({ type: 'queueEnded' });
-      } else if (Platform.OS === 'android') {
-        // Auto-advance natively on Android because the WebView JS execution
-        // is suspended when the screen is locked, so it cannot respond to
-        // an 'ended' event with a 'skipTo' message.
-        handleSkipTo(currentIndex + 1, { resetFinishGuard: false });
       } else {
-        notifyWebView?.({ type: 'ended', index: currentIndex });
+        // Auto-advance natively because WebView JS execution is suspended
+        // when the app is backgrounded or the screen is locked, so it
+        // cannot respond to an 'ended' event with a 'skipTo' message.
+        handleSkipTo(currentIndex + 1, { resetFinishGuard: false });
       }
     }
   }
@@ -440,24 +430,45 @@ export function registerEventListeners(sendToWebView: SendToWebView) {
   const subA = playerA!.addListener('playbackStatusUpdate', (status) => onStatus(playerA!, status));
   const subB = playerB!.addListener('playbackStatusUpdate', (status) => onStatus(playerB!, status));
 
-  // On Android, re-sync the WebView when the app returns to the foreground.
+  // Resume after OS audio interruption (phone call, Siri, other app audio).
+  // expo-audio's native handler only resumes when iOS sets shouldResume=true,
+  // which doesn't cover all interruption types. We always resume for audiobook
+  // playback. Lock screen pause is a remote command (MPRemoteCommandCenter),
+  // NOT an interruption, so this does not interfere with user-initiated pause.
+  // The `wasPlayingBeforeInterruption` guard prevents resuming if the user had
+  // already paused from lock screen before the interruption occurred. We check
+  // `lastSentState` (from the player status listener) rather than the JS-only
+  // `active` flag, because lock-screen pause goes straight to the native
+  // player without calling handlePause().
+  let wasPlayingBeforeInterruption = false;
+  const interruptionBeganSub = addInterruptionBeganListener(() => {
+    wasPlayingBeforeInterruption = lastSentState === 'playing';
+  });
+  const interruptionEndedSub = addInterruptionEndedListener((_event) => {
+    if (wasPlayingBeforeInterruption && active && !errored) {
+      getActivePlayer()?.play();
+    }
+    wasPlayingBeforeInterruption = false;
+  });
+
+  // Re-sync the WebView when the app returns to the foreground.
   // injectJavaScript calls made while the WebView was suspended are dropped,
-  // so the web app may have stale track/state info after lock screen playback.
-  const appStateSub = Platform.OS === 'android'
-    ? AppState.addEventListener('change', (nextAppState) => {
-        if (nextAppState === 'active' && currentIndex >= 0) {
-          notifyWebView?.({ type: 'trackChanged', index: currentIndex, lastIndex: -1 });
-          if (lastSentState) {
-            notifyWebView?.({ type: 'playbackState', state: lastSentState });
-          }
-        }
-      })
-    : null;
+  // so the web app may have stale track/state info after background playback.
+  const appStateSub = AppState.addEventListener('change', (nextAppState) => {
+    if (nextAppState === 'active' && currentIndex >= 0) {
+      notifyWebView?.({ type: 'trackChanged', index: currentIndex, lastIndex: -1 });
+      if (lastSentState) {
+        notifyWebView?.({ type: 'playbackState', state: lastSentState });
+      }
+    }
+  });
 
   return () => {
     subA.remove();
     subB.remove();
-    appStateSub?.remove();
+    interruptionBeganSub.remove();
+    interruptionEndedSub.remove();
+    appStateSub.remove();
     clearStuckTimer();
     resetIdle();
     active = false;

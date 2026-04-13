@@ -7,15 +7,15 @@
     "development": {
       "developmentClient": true,
       "distribution": "internal",
-      "cache": { "key": "4374e25" }
+      "cache": { "key": "a7a6f9e" }
     },
     "preview": {
       "distribution": "internal",
-      "cache": { "key": "4374e25" }
+      "cache": { "key": "a7a6f9e" }
     },
     "production": {
       "autoIncrement": true,
-      "cache": { "key": "4374e25" }
+      "cache": { "key": "a7a6f9e" }
     }
   },
   "submit": {
