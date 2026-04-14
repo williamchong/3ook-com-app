@@ -2,6 +2,7 @@ import CookieManager from '@preeternal/react-native-cookie-manager';
 import {
   createAudioPlayer,
   setAudioModeAsync,
+  setIsAudioActiveAsync,
   type AudioPlayer,
   type AudioStatus,
 } from 'expo-audio';
@@ -51,6 +52,7 @@ let currentIndex = -1;
 let currentRate = 1;
 let lastFinishTime = 0;
 let loadPromise: Promise<void> = Promise.resolve();
+let sessionReleasePromise: Promise<void> | null = null;
 let notifyWebView: SendToWebView | null = null;
 let lastSentState = '';
 
@@ -134,11 +136,16 @@ function preloadNext(): void {
 }
 
 function getOrCreatePlayers(): AudioPlayer {
+  // keepAudioSessionActive prevents expo-audio from deactivating the
+  // AVAudioSession on every pause()/track end. Without this, the swap from
+  // player A to player B races a 100ms-deferred session deactivation on iOS,
+  // producing audible gaps and clicks between segments. handleStop() must
+  // explicitly call setIsAudioActiveAsync(false) to release the session.
   if (!playerA) {
-    playerA = createAudioPlayer();
+    playerA = createAudioPlayer(null, { keepAudioSessionActive: true });
   }
   if (!playerB) {
-    playerB = createAudioPlayer();
+    playerB = createAudioPlayer(null, { keepAudioSessionActive: true });
   }
   return getActivePlayer()!;
 }
@@ -241,6 +248,16 @@ export function handleLoad(msg: LoadMessage): Promise<void> {
 }
 
 async function doLoad(msg: LoadMessage): Promise<void> {
+  // Wait for any pending session release from a prior handleStop. Otherwise
+  // setIsAudioActiveAsync(false) (background queue) can land after play()'s
+  // synchronous activateSession(), leaving the session deactivated.
+  const pendingRelease = sessionReleasePromise;
+  if (pendingRelease) {
+    await pendingRelease;
+    if (sessionReleasePromise === pendingRelease) {
+      sessionReleasePromise = null;
+    }
+  }
   await setupPlayer();
 
   const p = getOrCreatePlayers();
@@ -308,6 +325,15 @@ export function handleStop(): void {
   getActivePlayer()?.setActiveForLockScreen(false);
   getIdlePlayer()?.pause();
   getIdlePlayer()?.setActiveForLockScreen(false);
+  // Release the AVAudioSession explicitly. Players are created with
+  // keepAudioSessionActive: true to avoid mid-queue deactivation, so pause()
+  // alone won't free the session for other apps. Track the promise so a
+  // fast-following handleLoad can wait for it before reactivating.
+  if (setupDone) {
+    sessionReleasePromise = setIsAudioActiveAsync(false).catch((e) => {
+      console.warn('Failed to release AVAudioSession:', e);
+    });
+  }
   resetIdle();
   currentIndex = -1;
   queue = [];
