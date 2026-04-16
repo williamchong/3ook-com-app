@@ -8,9 +8,9 @@ const APP_BOUND_DOMAINS = Object.freeze([
 ]);
 
 function isAppBoundHost(host) {
-  const apex = host.toLowerCase();
+  const lowerHost = host.toLowerCase();
   return APP_BOUND_DOMAINS.some(
-    (domain) => apex === domain || apex.endsWith(`.${domain}`)
+    (domain) => lowerHost === domain || lowerHost.endsWith(`.${domain}`)
   );
 }
 
