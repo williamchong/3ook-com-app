@@ -259,6 +259,13 @@ async function doLoad(msg: LoadMessage): Promise<void> {
     }
   }
   await setupPlayer();
+  // Re-enable audio after handleStop's setIsAudioActiveAsync(false). On Android
+  // that call flips a module-wide `audioEnabled` flag that gates every future
+  // play() — without flipping it back, replace()+play() silently no-ops and the
+  // player stays in buffering forever (e.g. after a voice-actor switch, which
+  // the web app implements as stop → load). iOS treats this as session
+  // reactivation, which is also what we want here.
+  await setIsAudioActiveAsync(true);
 
   const p = getOrCreatePlayers();
 
