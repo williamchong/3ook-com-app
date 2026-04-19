@@ -497,7 +497,7 @@ export function registerEventListeners(sendToWebView: SendToWebView) {
   // so the web app may have stale track/state info after background playback.
   const appStateSub = AppState.addEventListener('change', (nextAppState) => {
     if (nextAppState === 'active' && currentIndex >= 0) {
-      notifyWebView?.({ type: 'trackChanged', index: currentIndex, lastIndex: -1 });
+      notifyWebView?.({ type: 'trackChanged', index: currentIndex, lastIndex: -1, isResync: true });
       if (lastSentState) {
         notifyWebView?.({ type: 'playbackState', state: lastSentState });
       }
