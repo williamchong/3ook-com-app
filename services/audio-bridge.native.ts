@@ -41,6 +41,8 @@ interface QueueTrack {
   artworkUrl: string;
 }
 
+type PreloadState = 'hit' | 'miss' | 'fresh';
+
 let playerA: AudioPlayer | null = null;
 let playerB: AudioPlayer | null = null;
 let activeSlot: 'A' | 'B' = 'A';
@@ -305,7 +307,12 @@ async function doLoad(msg: LoadMessage): Promise<void> {
   // Idle player may still be buffering its last preload; pause before new queue
   getIdlePlayer()?.pause();
 
-  notifyWebView?.({ type: 'trackChanged', index: currentIndex, lastIndex: -1 });
+  notifyWebView?.({
+    type: 'trackChanged',
+    index: currentIndex,
+    lastIndex: -1,
+    preloadState: 'fresh' satisfies PreloadState,
+  });
   playTrack(p, queue[currentIndex]);
 }
 
@@ -364,7 +371,9 @@ export function handleSkipTo(index: number, { resetFinishGuard = true } = {}): v
   // player (which triggers a blocking=1 TTS round trip on iOS).
   const idle = getIdlePlayer();
   const idleHasThisTrack = preload.readyIndex === index || preload.loadingIndex === index;
-  if (idleHasThisTrack && idle?.isLoaded) {
+  const preloadState: PreloadState = idleHasThisTrack && idle?.isLoaded ? 'hit' : 'miss';
+
+  if (preloadState === 'hit') {
     swapToIdle(queue[currentIndex]);
   } else {
     resetIdle();
@@ -375,6 +384,7 @@ export function handleSkipTo(index: number, { resetFinishGuard = true } = {}): v
     type: 'trackChanged',
     index: currentIndex,
     lastIndex,
+    preloadState,
   });
   preloadNext();
 }
