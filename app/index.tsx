@@ -1,4 +1,5 @@
 import * as Application from 'expo-application';
+import * as Linking from 'expo-linking';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { BackHandler, Platform, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -20,7 +21,7 @@ import { getDownloadHandlers } from '../services/download-bridge';
 import { getIdentityHandlers } from '../services/identity-bridge';
 import { posthog } from '../services/posthog';
 import { isDeepLink, openDeepLink, openExternalURL } from '../services/url-bridge';
-import { getInitialURL, saveLastURL } from '../services/url-storage';
+import { getInitialURL, resolveDeepLinkURL, saveLastURL } from '../services/url-storage';
 
 // e.g. 3ook-com-app/1.1.0 (iOS 18.0) Build/42
 const USER_AGENT = (() => {
@@ -35,10 +36,28 @@ export default function App() {
   const insets = useSafeAreaInsets();
   const webViewRef = useRef<WebView>(null);
   const canGoBackRef = useRef(false);
+  const currentURLRef = useRef<string>('');
   const [initialURL, setInitialURL] = useState<string | null>(null);
 
   useEffect(() => {
-    getInitialURL().then(setInitialURL);
+    (async () => {
+      const deepLink = await Linking.getInitialURL();
+      const url = resolveDeepLinkURL(deepLink) ?? (await getInitialURL());
+      currentURLRef.current = url;
+      setInitialURL(url);
+    })();
+  }, []);
+
+  useEffect(() => {
+    const sub = Linking.addEventListener('url', ({ url }) => {
+      const target = resolveDeepLinkURL(url);
+      if (!target || target === currentURLRef.current) return;
+      currentURLRef.current = target;
+      webViewRef.current?.injectJavaScript(
+        `window.location.href = ${JSON.stringify(target)};true;`
+      );
+    });
+    return () => sub.remove();
   }, []);
 
   const sendToWebView = useCallback((data: object) => {
@@ -101,8 +120,10 @@ export default function App() {
     (navState: WebViewNavigation) => {
       canGoBackRef.current = navState.canGoBack;
       if (!navState.url) return;
+      const resolvedURL = resolveDeepLinkURL(navState.url) ?? navState.url;
+      currentURLRef.current = resolvedURL;
       if (saveTimer.current) clearTimeout(saveTimer.current);
-      saveTimer.current = setTimeout(() => saveLastURL(navState.url), 1500);
+      saveTimer.current = setTimeout(() => saveLastURL(resolvedURL), 1500);
     },
     []
   );

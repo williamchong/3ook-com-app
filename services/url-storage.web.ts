@@ -4,6 +4,10 @@ const BASE_URL = 'https://3ook.com';
 
 export function saveLastURL(_url: string): void {}
 
+export function resolveDeepLinkURL(_url: string | null | undefined): string | null {
+  return null;
+}
+
 export async function getInitialURL(): Promise<string> {
   return `${BASE_URL}?app=1`;
 }

@@ -12,6 +12,10 @@
       "supportsTablet": true,
       "bundleIdentifier": "land.liker.book3app",
       "googleServicesFile": "./GoogleService-Info.plist",
+      "associatedDomains": [
+        "applinks:3ook.com",
+        "webcredentials:3ook.com"
+      ],
       "infoPlist": {
         "CFBundleDisplayName": "3ook Reader",
         "ITSAppUsesNonExemptEncryption": false,
@@ -36,7 +40,20 @@
         "backgroundImage": "./assets/images/android-icon-background.png",
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "intentFilters": [
+        {
+          "action": "VIEW",
+          "autoVerify": true,
+          "data": [
+            {
+              "scheme": "https",
+              "host": "3ook.com"
+            }
+          ],
+          "category": ["BROWSABLE", "DEFAULT"]
+        }
+      ]
     },
     "web": {
       "output": "static",

@@ -16,6 +16,7 @@ interface StoredURL {
 function is3ookURL(url: string): boolean {
   try {
     const parsed = new URL(url);
+    if (parsed.protocol !== 'https:') return false;
     return (
       parsed.hostname === '3ook.com' || parsed.hostname.endsWith('.3ook.com')
     );
@@ -48,6 +49,11 @@ export function saveLastURL(url: string): void {
   } catch (e) {
     console.warn('[url-storage] write failed:', e);
   }
+}
+
+export function resolveDeepLinkURL(url: string | null | undefined): string | null {
+  if (!url || !is3ookURL(url)) return null;
+  return ensureAppParam(url);
 }
 
 export async function getInitialURL(): Promise<string> {
