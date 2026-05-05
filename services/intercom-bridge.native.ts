@@ -1,7 +1,14 @@
 import type { EmitterSubscription } from 'react-native';
-import { DeviceEventEmitter, NativeEventEmitter, NativeModules, Platform } from 'react-native';
+import { AppState, DeviceEventEmitter, NativeEventEmitter, NativeModules, Platform } from 'react-native';
 
 import type { BridgeHandlerMap, SendToWebView } from './bridge-dispatcher';
+import {
+  addDeviceTokenListener,
+  getCurrentDeviceToken,
+  getCurrentPermissionStatus,
+  isPushAvailable,
+  requestPushPermission as requestPushPermissionPrompt,
+} from './push-bridge';
 
 type IntercomModuleType = typeof import('@intercom/intercom-react-native');
 type IntercomDefault = IntercomModuleType['default'];
@@ -26,6 +33,18 @@ const loadedIntercom: LoadedIntercom | null = (() => {
 
 export function isIntercomAvailable(): boolean {
   return loadedIntercom !== null;
+}
+
+// Hermes provides atob; decode the middle JWT segment (base64url) for the
+// claims. Header/signature are uninteresting for IV failures, so skip them.
+function decodeJwtPayload(jwt: string): unknown {
+  const segment = jwt.split('.')[1];
+  if (!segment) return undefined;
+  const padded = segment.replace(/-/g, '+').replace(/_/g, '/').padEnd(
+    segment.length + ((4 - (segment.length % 4)) % 4),
+    '='
+  );
+  return JSON.parse(atob(padded));
 }
 
 async function safeCall<T>(label: string, fn: () => Promise<T>): Promise<T | undefined> {
@@ -61,23 +80,58 @@ function serialize<T>(fn: () => Promise<T>): Promise<T> {
   return next;
 }
 
-export function getIntercomHandlers(): BridgeHandlerMap {
+// The native SDK refuses to render the messenger ("Content could not be
+// loaded") if no user session exists. Identified users are registered via
+// `identifyUser`; for guests we register an unidentified session on demand.
+async function ensureSession() {
+  if (!loadedIntercom) return;
+  const { Intercom } = loadedIntercom;
+  const loggedIn = await safeCall('isUserLoggedIn', () => Intercom.isUserLoggedIn());
+  if (loggedIn) return;
+  await safeCall('loginUnidentifiedUser', () => Intercom.loginUnidentifiedUser());
+}
+
+// Caller must invoke this inside the serialize() queue: Identity Verification
+// requires the JWT to land before the token attaches, otherwise the token
+// registers against the prior (or guest) session.
+async function registerPushTokenIfPossible() {
+  if (!loadedIntercom) return;
+  if (!isPushAvailable()) return;
+  const status = await getCurrentPermissionStatus();
+  if (status !== 'granted') return;
+  const { Intercom } = loadedIntercom;
+  const loggedIn = await safeCall('isUserLoggedIn', () => Intercom.isUserLoggedIn());
+  if (!loggedIn) return;
+  const token = await getCurrentDeviceToken();
+  if (!token) return;
+  if (token === lastRegisteredToken) return;
+  // Don't route through safeCall: a swallowed failure here would still flip
+  // the dedupe gate, so a transient SDK/network blip would silently disable
+  // push delivery for the rest of the session.
+  try {
+    await Intercom.sendTokenToIntercom(token);
+    lastRegisteredToken = token;
+  } catch (e) {
+    console.warn('[intercom] sendTokenToIntercom failed', e);
+  }
+}
+
+// Dedupe successive sendTokenToIntercom calls for the same token + session.
+// Cleared whenever the user identity changes (identify / logout) so a token
+// shared across users doesn't get skipped after a switch.
+let lastRegisteredToken: string | null = null;
+
+export function getIntercomHandlers(send: SendToWebView): BridgeHandlerMap {
   if (!loadedIntercom) return {};
   const { Intercom } = loadedIntercom;
-
-  // The native SDK refuses to render the messenger ("Content could not be
-  // loaded") if no user session exists. Identified users are registered via
-  // `identifyUser`; for guests we register an unidentified session on demand.
-  async function ensureSession() {
-    const loggedIn = await safeCall('isUserLoggedIn', () => Intercom.isUserLoggedIn());
-    if (loggedIn) return;
-    await safeCall('loginUnidentifiedUser', () => Intercom.loginUnidentifiedUser());
-  }
 
   return {
     intercomShow: async () => {
       await serialize(async () => {
         await ensureSession();
+        // Guests can also receive admin replies via push; register the token
+        // once a session exists.
+        await registerPushTokenIfPossible();
         await safeCall('present', () => Intercom.present());
       });
     },
@@ -86,12 +140,16 @@ export function getIntercomHandlers(): BridgeHandlerMap {
       const initial = typeof msg.message === 'string' ? msg.message : undefined;
       await serialize(async () => {
         await ensureSession();
+        await registerPushTokenIfPossible();
         await safeCall('presentMessageComposer', () => Intercom.presentMessageComposer(initial));
       });
     },
 
     intercomLogout: async () => {
-      await serialize(() => safeCall('logout', () => Intercom.logout()));
+      await serialize(async () => {
+        lastRegisteredToken = null;
+        await safeCall('logout', () => Intercom.logout());
+      });
     },
 
     // logEvent is buffered by Intercom pre-login, so it doesn't need to wait
@@ -104,6 +162,14 @@ export function getIntercomHandlers(): BridgeHandlerMap {
           ? (msg.metaData as Record<string, unknown>)
           : undefined;
       await safeCall('logEvent', () => Intercom.logEvent(name, metaData));
+    },
+
+    requestPushPermission: async () => {
+      const status = await requestPushPermissionPrompt();
+      if (status === 'granted') {
+        await serialize(() => registerPushTokenIfPossible());
+      }
+      send({ type: 'pushPermissionChanged', status });
     },
   };
 }
@@ -128,6 +194,14 @@ export function wrapIdentityHandlers(base: BridgeHandlerMap): BridgeHandlerMap {
     const email = typeof msg.email === 'string' ? msg.email : undefined;
     if (!userId && !email) return;
 
+    if (__DEV__) {
+      try {
+        console.log('[intercom] jwt payload', decodeJwtPayload(intercomToken));
+      } catch (e) {
+        console.warn('[intercom] failed to decode jwt', e);
+      }
+    }
+
     // setUserJwt must be called before loginUserWithUserAttributes for
     // JWT verification to take effect.
     await safeCall('setUserJwt', () => Intercom.setUserJwt(intercomToken));
@@ -151,12 +225,24 @@ export function wrapIdentityHandlers(base: BridgeHandlerMap): BridgeHandlerMap {
   return {
     ...base,
     identifyUser: async (msg) => {
-      await Promise.all([base.identifyUser?.(msg), serialize(() => intercomIdentify(msg))]);
+      await Promise.all([
+        base.identifyUser?.(msg),
+        serialize(async () => {
+          // The token attached to the prior guest/user session must be
+          // re-sent so it migrates to the now-identified Intercom user.
+          lastRegisteredToken = null;
+          await intercomIdentify(msg);
+          await registerPushTokenIfPossible();
+        }),
+      ]);
     },
     resetUser: async (msg) => {
       await Promise.all([
         base.resetUser?.(msg),
-        serialize(() => safeCall('logout', () => Intercom.logout())),
+        serialize(async () => {
+          lastRegisteredToken = null;
+          await safeCall('logout', () => Intercom.logout());
+        }),
       ]);
     },
   };
@@ -208,7 +294,36 @@ export function registerIntercomEventListeners(send: SendToWebView): () => void 
     })
   );
 
+  // APNs/FCM rotates tokens occasionally (app restore, FCM key roll); the
+  // registration helper gates on session+permission so this is safe to fire
+  // eagerly.
+  const unsubToken = addDeviceTokenListener(() => {
+    serialize(() => registerPushTokenIfPossible());
+  });
+
+  async function syncPushPermission() {
+    if (!isPushAvailable()) return;
+    try {
+      const status = await getCurrentPermissionStatus();
+      send({ type: 'pushPermissionChanged', status });
+      if (status === 'granted') {
+        serialize(() => registerPushTokenIfPossible());
+      }
+    } catch (e) {
+      console.warn('[intercom] push status check failed', e);
+    }
+  }
+  syncPushPermission();
+
+  // OS notification permission can change in Settings and the platform
+  // doesn't notify us. Re-check on foreground so the toggle doesn't go stale.
+  const appStateSub = AppState.addEventListener('change', (next) => {
+    if (next === 'active') syncPushPermission();
+  });
+
   return () => {
+    unsubToken();
+    appStateSub.remove();
     for (const s of subs) s.remove();
   };
 }

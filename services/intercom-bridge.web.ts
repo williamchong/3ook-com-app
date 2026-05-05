@@ -4,7 +4,7 @@ export function isIntercomAvailable(): boolean {
   return false;
 }
 
-export function getIntercomHandlers(): BridgeHandlerMap {
+export function getIntercomHandlers(_send: SendToWebView): BridgeHandlerMap {
   return {};
 }
 

@@ -26,6 +26,7 @@ import {
   wrapIdentityHandlers,
 } from '../services/intercom-bridge';
 import { posthog } from '../services/posthog';
+import { isPushAvailable } from '../services/push-bridge';
 import { isDeepLink, openDeepLink, openExternalURL } from '../services/url-bridge';
 import { getInitialURL, resolveDeepLinkURL, saveLastURL } from '../services/url-storage';
 
@@ -43,6 +44,9 @@ const USER_AGENT = (() => {
 // bridge that web should be able to feature-detect.
 const NATIVE_BRIDGE_FEATURES: readonly string[] = [
   ...(isIntercomAvailable() ? ['intercom'] : []),
+  // Push is currently routed through the Intercom handler (`requestPushPermission`,
+  // `pushPermissionChanged`); advertise only when both are usable.
+  ...(isIntercomAvailable() && isPushAvailable() ? ['intercomPush'] : []),
 ];
 const NATIVE_BRIDGE_BOOTSTRAP = `(function(){try{window.__nativeBridge=window.__nativeBridge||{};window.__nativeBridge.features=${JSON.stringify(NATIVE_BRIDGE_FEATURES)};}catch(e){}})();true;`;
 
@@ -85,7 +89,7 @@ export default function App() {
   useEffect(() => {
     registerHandlers(getAudioHandlers());
     registerHandlers(getDownloadHandlers());
-    registerHandlers(getIntercomHandlers());
+    registerHandlers(getIntercomHandlers(sendToWebView));
     registerHandlers(wrapIdentityHandlers(getIdentityHandlers(posthog)));
 
     setupPlayer();

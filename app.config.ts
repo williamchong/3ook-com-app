@@ -66,6 +66,7 @@ const config: ExpoConfig = {
         NSAllowsLocalNetworking: true,
         NSAllowsArbitraryLoadsForMedia: true,
       },
+      UIBackgroundModes: ['remote-notification'],
     },
   },
   android: {
@@ -149,7 +150,12 @@ const config: ExpoConfig = {
     '@react-native-firebase/app',
     'expo-sharing',
     './plugins/withAppBoundDomains',
+    // Intercom must precede any plugin that registers its own
+    // FirebaseMessagingService (e.g. expo-notifications). Intercom's
+    // auto-generated service routes Intercom pushes to the SDK and forwards
+    // everything else; flipping the order shadows Intercom's handler.
     ...(intercomPlugin ? [intercomPlugin] : []),
+    'expo-notifications',
   ],
   experiments: {
     typedRoutes: true,

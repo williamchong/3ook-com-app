@@ -2,7 +2,7 @@ import type { BridgeHandlerMap, SendToWebView } from './bridge-dispatcher';
 
 export function isIntercomAvailable(): boolean;
 
-export function getIntercomHandlers(): BridgeHandlerMap;
+export function getIntercomHandlers(send: SendToWebView): BridgeHandlerMap;
 
 export function wrapIdentityHandlers(base: BridgeHandlerMap): BridgeHandlerMap;
 
