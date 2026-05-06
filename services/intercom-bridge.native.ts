@@ -150,20 +150,21 @@ function dispatchPushStatus(send: SendToWebView, status: PushPermissionStatus): 
   send({ type: 'pushPermissionChanged', status });
 }
 
-// Fire-and-forget enqueue. Token rotation and the dedupe inside
-// registerPushTokenIfPossible mean this is safe to call eagerly: a
-// no-change registration short-circuits cheaply.
+// Inner dedupe (lastRegisteredToken) makes eager calls cheap.
 function queueTokenRegistration(): void {
   serialize(() => registerPushTokenIfPossible());
+}
+
+function applyPushStatus(send: SendToWebView, status: PushPermissionStatus): void {
+  cachedPushStatus = status;
+  dispatchPushStatus(send, status);
+  if (status === 'granted') queueTokenRegistration();
 }
 
 async function syncPushStatus(send: SendToWebView): Promise<void> {
   if (!isPushAvailable()) return;
   try {
-    const status = await getCurrentPermissionStatus();
-    cachedPushStatus = status;
-    dispatchPushStatus(send, status);
-    if (status === 'granted') queueTokenRegistration();
+    applyPushStatus(send, await getCurrentPermissionStatus());
   } catch (e) {
     console.warn('[intercom] push status check failed', e);
   }
@@ -226,20 +227,16 @@ export function getIntercomHandlers(send: SendToWebView): BridgeHandlerMap {
   };
 }
 
-// Show the iOS prompt and propagate the resulting status: update the cache,
-// notify web, and enqueue a token registration on grant. Safe to call outside
-// the Intercom serialize queue — registration re-enters the queue itself.
-async function runPushPrompt(send: SendToWebView): Promise<PushPermissionStatus> {
-  const status = await requestPushPermissionPrompt();
-  cachedPushStatus = status;
-  dispatchPushStatus(send, status);
-  if (status === 'granted') queueTokenRegistration();
-  return status;
+// Safe to call outside the Intercom serialize queue — applyPushStatus's
+// queueTokenRegistration re-enters the queue itself.
+async function runPushPrompt(send: SendToWebView): Promise<void> {
+  applyPushStatus(send, await requestPushPermissionPrompt());
 }
 
-// iOS won't deliver automation pushes (or surface a Settings entry) until
-// requestAuthorization has been called once. iOS enforces one-shot semantics,
-// so the `undetermined` gate is sufficient — no local persistence needed.
+// Push delivery requires the runtime permission prompt to have fired at
+// least once. The OS treats the decision as sticky — once status leaves
+// 'undetermined' it doesn't return — so the gate alone is sufficient,
+// no local persistence needed.
 async function maybePromptForPushPermission(send: SendToWebView): Promise<void> {
   if (!isPushAvailable()) return;
   const status = await readPushStatus();

@@ -9,7 +9,7 @@ export async function getCurrentPermissionStatus(): Promise<PushPermissionStatus
 }
 
 export async function requestPushPermission(): Promise<PushPermissionStatus> {
-  return 'denied';
+  return 'undetermined';
 }
 
 export async function getCurrentDeviceToken(): Promise<string | null> {
