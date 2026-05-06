@@ -9,6 +9,7 @@ import {
   isPushAvailable,
   requestPushPermission as requestPushPermissionPrompt,
 } from './push-bridge';
+import type { PushPermissionStatus } from './push-bridge';
 
 type IntercomModuleType = typeof import('@intercom/intercom-react-native');
 type IntercomDefault = IntercomModuleType['default'];
@@ -33,6 +34,10 @@ const loadedIntercom: LoadedIntercom | null = (() => {
 
 export function isIntercomAvailable(): boolean {
   return loadedIntercom !== null;
+}
+
+export function isIntercomPushSupported(): boolean {
+  return isIntercomAvailable() && isPushAvailable();
 }
 
 // Hermes provides atob; decode the middle JWT segment (base64url) for the
@@ -97,7 +102,7 @@ async function ensureSession() {
 async function registerPushTokenIfPossible() {
   if (!loadedIntercom) return;
   if (!isPushAvailable()) return;
-  const status = await getCurrentPermissionStatus();
+  const status = await readPushStatus();
   if (status !== 'granted') return;
   const { Intercom } = loadedIntercom;
   const loggedIn = await safeCall('isUserLoggedIn', () => Intercom.isUserLoggedIn());
@@ -120,6 +125,57 @@ async function registerPushTokenIfPossible() {
 // Cleared whenever the user identity changes (identify / logout) so a token
 // shared across users doesn't get skipped after a switch.
 let lastRegisteredToken: string | null = null;
+
+// `identifyUser` fires on every cold start and session refresh, not just
+// fresh login. iOS's permission status is sticky once it leaves
+// 'undetermined' (only Settings can flip it, handled via foreground sync),
+// so cache the resolved value to skip the native bridge call on the chatty
+// path. Refreshed by syncPushStatus() on app foreground.
+let cachedPushStatus: PushPermissionStatus | null = null;
+async function readPushStatus(): Promise<PushPermissionStatus> {
+  if (cachedPushStatus !== null && cachedPushStatus !== 'undetermined') {
+    return cachedPushStatus;
+  }
+  cachedPushStatus = await getCurrentPermissionStatus();
+  return cachedPushStatus;
+}
+
+// Three call sites emit pushPermissionChanged with the same payload (foreground
+// sync, identify-time prompt, web-driven request). Skip dispatches when the
+// value hasn't moved so web doesn't react redundantly.
+let lastDispatchedPushStatus: PushPermissionStatus | null = null;
+function dispatchPushStatus(send: SendToWebView, status: PushPermissionStatus): void {
+  if (status === lastDispatchedPushStatus) return;
+  lastDispatchedPushStatus = status;
+  send({ type: 'pushPermissionChanged', status });
+}
+
+// Fire-and-forget enqueue. Token rotation and the dedupe inside
+// registerPushTokenIfPossible mean this is safe to call eagerly: a
+// no-change registration short-circuits cheaply.
+function queueTokenRegistration(): void {
+  serialize(() => registerPushTokenIfPossible());
+}
+
+async function syncPushStatus(send: SendToWebView): Promise<void> {
+  if (!isPushAvailable()) return;
+  try {
+    const status = await getCurrentPermissionStatus();
+    cachedPushStatus = status;
+    dispatchPushStatus(send, status);
+    if (status === 'granted') queueTokenRegistration();
+  } catch (e) {
+    console.warn('[intercom] push status check failed', e);
+  }
+}
+
+// WebView reloads (e.g. after iOS kills the content process) land in a fresh
+// JS context with no memory of prior dispatches; reset the dedupe so the
+// next emit lands instead of being suppressed.
+export function resyncPushStatusToWeb(send: SendToWebView): Promise<void> {
+  lastDispatchedPushStatus = null;
+  return syncPushStatus(send);
+}
 
 export function getIntercomHandlers(send: SendToWebView): BridgeHandlerMap {
   if (!loadedIntercom) return {};
@@ -165,16 +221,36 @@ export function getIntercomHandlers(send: SendToWebView): BridgeHandlerMap {
     },
 
     requestPushPermission: async () => {
-      const status = await requestPushPermissionPrompt();
-      if (status === 'granted') {
-        await serialize(() => registerPushTokenIfPossible());
-      }
-      send({ type: 'pushPermissionChanged', status });
+      await runPushPrompt(send);
     },
   };
 }
 
-export function wrapIdentityHandlers(base: BridgeHandlerMap): BridgeHandlerMap {
+// Show the iOS prompt and propagate the resulting status: update the cache,
+// notify web, and enqueue a token registration on grant. Safe to call outside
+// the Intercom serialize queue — registration re-enters the queue itself.
+async function runPushPrompt(send: SendToWebView): Promise<PushPermissionStatus> {
+  const status = await requestPushPermissionPrompt();
+  cachedPushStatus = status;
+  dispatchPushStatus(send, status);
+  if (status === 'granted') queueTokenRegistration();
+  return status;
+}
+
+// iOS won't deliver automation pushes (or surface a Settings entry) until
+// requestAuthorization has been called once. iOS enforces one-shot semantics,
+// so the `undetermined` gate is sufficient — no local persistence needed.
+async function maybePromptForPushPermission(send: SendToWebView): Promise<void> {
+  if (!isPushAvailable()) return;
+  const status = await readPushStatus();
+  if (status !== 'undetermined') return;
+  await runPushPrompt(send);
+}
+
+export function wrapIdentityHandlers(
+  base: BridgeHandlerMap,
+  send: SendToWebView,
+): BridgeHandlerMap {
   if (!loadedIntercom) return base;
   const { Intercom } = loadedIntercom;
 
@@ -196,7 +272,18 @@ export function wrapIdentityHandlers(base: BridgeHandlerMap): BridgeHandlerMap {
 
     if (__DEV__) {
       try {
-        console.log('[intercom] jwt payload', decodeJwtPayload(intercomToken));
+        // Log only IDs/timestamps — email and custom attributes can land in
+        // crash-reporter breadcrumbs from dev builds.
+        const payload = decodeJwtPayload(intercomToken) as
+          | Record<string, unknown>
+          | undefined;
+        if (payload) {
+          console.log('[intercom] jwt claims', {
+            user_id: payload.user_id,
+            exp: payload.exp,
+            iat: payload.iat,
+          });
+        }
       } catch (e) {
         console.warn('[intercom] failed to decode jwt', e);
       }
@@ -234,6 +321,9 @@ export function wrapIdentityHandlers(base: BridgeHandlerMap): BridgeHandlerMap {
           await intercomIdentify(msg);
           await registerPushTokenIfPossible();
         }),
+        // Outside serialize so the modal prompt doesn't stall queued Intercom
+        // ops; post-grant registration re-enters the queue itself.
+        maybePromptForPushPermission(send),
       ]);
     },
     resetUser: async (msg) => {
@@ -298,27 +388,15 @@ export function registerIntercomEventListeners(send: SendToWebView): () => void 
   // registration helper gates on session+permission so this is safe to fire
   // eagerly.
   const unsubToken = addDeviceTokenListener(() => {
-    serialize(() => registerPushTokenIfPossible());
+    queueTokenRegistration();
   });
 
-  async function syncPushPermission() {
-    if (!isPushAvailable()) return;
-    try {
-      const status = await getCurrentPermissionStatus();
-      send({ type: 'pushPermissionChanged', status });
-      if (status === 'granted') {
-        serialize(() => registerPushTokenIfPossible());
-      }
-    } catch (e) {
-      console.warn('[intercom] push status check failed', e);
-    }
-  }
-  syncPushPermission();
-
-  // OS notification permission can change in Settings and the platform
-  // doesn't notify us. Re-check on foreground so the toggle doesn't go stale.
+  // First sync is now driven by WebView onLoadEnd via resyncPushStatusToWeb,
+  // which guarantees the web JS context exists to receive the dispatch.
+  // Foreground transitions still need their own re-check because Settings
+  // can flip permission while the app is backgrounded.
   const appStateSub = AppState.addEventListener('change', (next) => {
-    if (next === 'active') syncPushPermission();
+    if (next === 'active') syncPushStatus(send);
   });
 
   return () => {
