@@ -19,3 +19,9 @@ export async function getCurrentDeviceToken(): Promise<string | null> {
 export function addDeviceTokenListener(_cb: (token: string) => void): () => void {
   return () => {};
 }
+
+export function addNotificationResponseListener(
+  _cb: (data: unknown) => void,
+): () => void {
+  return () => {};
+}

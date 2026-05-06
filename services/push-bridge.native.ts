@@ -55,3 +55,12 @@ export function addDeviceTokenListener(cb: (token: string) => void): () => void 
   });
   return () => sub.remove();
 }
+
+export function addNotificationResponseListener(
+  cb: (data: unknown) => void,
+): () => void {
+  const sub = Notifications.addNotificationResponseReceivedListener((response) => {
+    cb(response.notification.request.content.data);
+  });
+  return () => sub.remove();
+}

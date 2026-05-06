@@ -4,6 +4,7 @@ import { AppState, DeviceEventEmitter, NativeEventEmitter, NativeModules, Platfo
 import type { BridgeHandlerMap, SendToWebView } from './bridge-dispatcher';
 import {
   addDeviceTokenListener,
+  addNotificationResponseListener,
   getCurrentDeviceToken,
   getCurrentPermissionStatus,
   isPushAvailable,
@@ -176,6 +177,31 @@ async function syncPushStatus(send: SendToWebView): Promise<void> {
 export function resyncPushStatusToWeb(send: SendToWebView): Promise<void> {
   lastDispatchedPushStatus = null;
   return syncPushStatus(send);
+}
+
+// Intercom RN's native `isIntercomPushNotification:` helper isn't bridged to
+// JS, so detect Intercom pushes by looking for known payload keys. False
+// positives here are bounded — the worst case is opening the messenger for a
+// foreign push, which the user can dismiss.
+function looksLikeIntercomPush(data: unknown): boolean {
+  if (!data || typeof data !== 'object') return false;
+  const d = data as Record<string, unknown>;
+  return 'conversation_id' in d || 'intercom_push_type' in d || 'instance_id' in d;
+}
+
+// Tapping a push notification launches the app via getInitialURL and the
+// expo-notifications response listener consumes the tap event before Intercom
+// ever sees it, so the messenger never auto-opens. Detect Intercom pushes
+// ourselves and present the messenger through the serialize queue so the
+// present call orders correctly against any in-flight identifyUser.
+function handleIntercomNotificationTap(data: unknown): void {
+  if (!loadedIntercom) return;
+  if (!looksLikeIntercomPush(data)) return;
+  const { Intercom } = loadedIntercom;
+  serialize(async () => {
+    await ensureSession();
+    await safeCall('present', () => Intercom.present());
+  });
 }
 
 export function getIntercomHandlers(send: SendToWebView): BridgeHandlerMap {
@@ -388,6 +414,11 @@ export function registerIntercomEventListeners(send: SendToWebView): () => void 
     queueTokenRegistration();
   });
 
+  // expo-notifications buffers the most recent response until a JS listener
+  // attaches, so registering here (from useEffect on mount) is early enough to
+  // catch cold-launch taps as well as warm-app taps.
+  const unsubResponse = addNotificationResponseListener(handleIntercomNotificationTap);
+
   // First sync is now driven by WebView onLoadEnd via resyncPushStatusToWeb,
   // which guarantees the web JS context exists to receive the dispatch.
   // Foreground transitions still need their own re-check because Settings
@@ -398,6 +429,7 @@ export function registerIntercomEventListeners(send: SendToWebView): () => void 
 
   return () => {
     unsubToken();
+    unsubResponse();
     appStateSub.remove();
     for (const s of subs) s.remove();
   };
