@@ -10,6 +10,7 @@ import type {
 } from 'react-native-webview/lib/WebViewTypes';
 
 import packageJson from '../package.json';
+import { trackEvent } from '../services/analytics';
 import { isAppBoundHost } from '../services/app-bound-domains';
 import {
   getAudioHandlers,
@@ -27,7 +28,6 @@ import {
   resyncPushStatusToWeb,
   wrapIdentityHandlers,
 } from '../services/intercom-bridge';
-import { posthog } from '../services/posthog';
 import { isDeepLink, openDeepLink, openExternalURL } from '../services/url-bridge';
 import { getInitialURL, resolveDeepLinkURL, saveLastURL } from '../services/url-storage';
 
@@ -61,7 +61,11 @@ export default function App() {
   useEffect(() => {
     (async () => {
       const deepLink = await Linking.getInitialURL();
-      const url = resolveDeepLinkURL(deepLink) ?? (await getInitialURL());
+      const resolved = resolveDeepLinkURL(deepLink);
+      if (resolved) {
+        trackEvent('launched_with_deep_link', { source: 'cold_start' });
+      }
+      const url = resolved ?? (await getInitialURL());
       currentURLRef.current = url;
       setInitialURL(url);
     })();
@@ -71,6 +75,7 @@ export default function App() {
     const sub = Linking.addEventListener('url', ({ url }) => {
       const target = resolveDeepLinkURL(url);
       if (!target || target === currentURLRef.current) return;
+      trackEvent('launched_with_deep_link', { source: 'warm' });
       currentURLRef.current = target;
       webViewRef.current?.injectJavaScript(
         `window.location.href = ${JSON.stringify(target)};true;`
@@ -91,7 +96,7 @@ export default function App() {
     registerHandlers(getAudioHandlers());
     registerHandlers(getDownloadHandlers());
     registerHandlers(getIntercomHandlers(sendToWebView));
-    registerHandlers(wrapIdentityHandlers(getIdentityHandlers(posthog), sendToWebView));
+    registerHandlers(wrapIdentityHandlers(getIdentityHandlers(), sendToWebView));
 
     setupPlayer();
     const unsubscribeAudio = registerEventListeners(sendToWebView);
@@ -105,6 +110,7 @@ export default function App() {
 
   // Reload WebView when iOS kills its content process in the background.
   const handleContentProcessDidTerminate = useCallback(() => {
+    trackEvent('webview_content_terminated');
     webViewRef.current?.reload();
   }, []);
 
@@ -122,6 +128,19 @@ export default function App() {
   const handleNavigationRequest = useCallback(
     (request: ShouldStartLoadRequest) => {
       if (isDeepLink(request.url)) {
+        // Don't capture full URL — wallet links can carry session tokens or
+        // user data. Scheme/host is enough to attribute the route.
+        let scheme = 'unknown';
+        let host: string | null = null;
+        try {
+          const parsed = new URL(request.url);
+          scheme = parsed.protocol.replace(':', '');
+          host = parsed.hostname || null;
+        } catch {
+          // Custom schemes (wc:, metamask:) may not parse — fall back to prefix.
+          scheme = request.url.split(':')[0] || 'unknown';
+        }
+        trackEvent('deep_link_opened', { scheme, host });
         openDeepLink(request.url).catch((e) =>
           console.warn('[deep link] failed to open:', request.url, e)
         );
@@ -134,6 +153,7 @@ export default function App() {
         const parsed = new URL(request.url);
         if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return true;
         if (isAppBoundHost(parsed.hostname)) return true;
+        trackEvent('external_url_opened', { host: parsed.hostname });
         openExternalURL(request.url).catch((e) =>
           console.warn('[external link] failed to open:', request.url, e)
         );

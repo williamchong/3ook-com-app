@@ -14,6 +14,7 @@ import {
   addInterruptionEndedListener,
 } from '../modules/audio-interruption';
 
+import { trackEvent } from './analytics';
 import type { SendToWebView, BridgeHandlerMap } from './bridge-dispatcher';
 
 interface TrackInfo {
@@ -313,6 +314,11 @@ async function doLoad(msg: LoadMessage): Promise<void> {
     lastIndex: -1,
     preloadState: 'fresh' satisfies PreloadState,
   });
+  trackEvent('audio_session_started', {
+    track_count: queue.length,
+    start_index: currentIndex,
+    rate: currentRate,
+  });
   playTrack(p, queue[currentIndex]);
 }
 
@@ -330,6 +336,9 @@ export function handleResume(): void {
 }
 
 export function handleStop(): void {
+  if (currentIndex >= 0) {
+    trackEvent('audio_session_stopped', { last_index: currentIndex });
+  }
   active = false;
   resetRecoveryState();
   clearStuckTimer();
@@ -386,6 +395,14 @@ export function handleSkipTo(index: number, { resetFinishGuard = true } = {}): v
     lastIndex,
     preloadState,
   });
+  // Captured natively because the WebView is suspended in background; tracking
+  // here also gives us preload hit-rate without the web app reporting it.
+  trackEvent('audio_track_advanced', {
+    from_index: lastIndex,
+    to_index: currentIndex,
+    preload_state: preloadState,
+    auto_advance: !resetFinishGuard,
+  });
   preloadNext();
 }
 
@@ -432,6 +449,7 @@ export function registerEventListeners(sendToWebView: SendToWebView) {
     if (status.playbackState === 'failed') {
       errored = true;
       clearStuckTimer();
+      trackEvent('audio_playback_failed', { current_index: currentIndex });
       notifyWebView?.({ type: 'error', message: 'Playback failed' });
       return;
     }
@@ -468,6 +486,7 @@ export function registerEventListeners(sendToWebView: SendToWebView) {
       lastFinishTime = now;
 
       if (currentIndex >= queue.length - 1) {
+        trackEvent('audio_queue_ended', { track_count: queue.length });
         notifyWebView?.({ type: 'queueEnded' });
       } else {
         // Auto-advance natively because WebView JS execution is suspended

@@ -1,6 +1,7 @@
 import type { EmitterSubscription } from 'react-native';
 import { AppState, DeviceEventEmitter, NativeEventEmitter, NativeModules, Platform } from 'react-native';
 
+import { trackEvent } from './analytics';
 import type { BridgeHandlerMap, SendToWebView } from './bridge-dispatcher';
 import {
   addDeviceTokenListener,
@@ -112,14 +113,17 @@ async function registerPushTokenIfPossible() {
   const token = await getCurrentDeviceToken();
   if (!token) return;
   if (token === lastRegisteredToken) return;
+  const tokenChanged = lastRegisteredToken !== null;
   // Don't route through safeCall: a swallowed failure here would still flip
   // the dedupe gate, so a transient SDK/network blip would silently disable
   // push delivery for the rest of the session.
   try {
     await Intercom.sendTokenToIntercom(token);
     lastRegisteredToken = token;
+    trackEvent('push_token_registered', { token_changed: tokenChanged });
   } catch (e) {
     console.warn('[intercom] sendTokenToIntercom failed', e);
+    trackEvent('push_token_registration_failed');
   }
 }
 
@@ -158,7 +162,14 @@ function queueTokenRegistration(): void {
 }
 
 function applyPushStatus(send: SendToWebView, status: PushPermissionStatus): void {
+  const previous = cachedPushStatus;
   cachedPushStatus = status;
+  if (previous !== status) {
+    trackEvent('push_permission_changed', {
+      status,
+      previous_status: previous ?? 'unknown',
+    });
+  }
   dispatchPushStatus(send, status);
   if (status === 'granted') queueTokenRegistration();
 }
@@ -196,8 +207,17 @@ function looksLikeIntercomPush(data: unknown): boolean {
 // ourselves and present the messenger through the serialize queue so the
 // present call orders correctly against any in-flight identifyUser.
 function handleIntercomNotificationTap(data: unknown): void {
+  const isIntercom = looksLikeIntercomPush(data);
+  const intercomPushType =
+    isIntercom && data && typeof data === 'object'
+      ? (data as Record<string, unknown>).intercom_push_type
+      : undefined;
+  trackEvent('push_notification_tapped', {
+    is_intercom_push: isIntercom,
+    intercom_push_type: typeof intercomPushType === 'string' ? intercomPushType : null,
+  });
   if (!loadedIntercom) return;
-  if (!looksLikeIntercomPush(data)) return;
+  if (!isIntercom) return;
   const { Intercom } = loadedIntercom;
   serialize(async () => {
     await ensureSession();
@@ -211,6 +231,7 @@ export function getIntercomHandlers(send: SendToWebView): BridgeHandlerMap {
 
   return {
     intercomShow: async () => {
+      trackEvent('intercom_show_requested');
       await serialize(async () => {
         await ensureSession();
         // Guests can also receive admin replies via push; register the token
@@ -222,6 +243,7 @@ export function getIntercomHandlers(send: SendToWebView): BridgeHandlerMap {
 
     intercomShowNewMessage: async (msg) => {
       const initial = typeof msg.message === 'string' ? msg.message : undefined;
+      trackEvent('intercom_new_message_started', { has_initial_text: !!initial });
       await serialize(async () => {
         await ensureSession();
         await registerPushTokenIfPossible();
@@ -230,6 +252,7 @@ export function getIntercomHandlers(send: SendToWebView): BridgeHandlerMap {
     },
 
     intercomLogout: async () => {
+      trackEvent('intercom_logout');
       await serialize(async () => {
         lastRegisteredToken = null;
         await safeCall('logout', () => Intercom.logout());
@@ -245,6 +268,7 @@ export function getIntercomHandlers(send: SendToWebView): BridgeHandlerMap {
         msg.metaData && typeof msg.metaData === 'object'
           ? (msg.metaData as Record<string, unknown>)
           : undefined;
+      trackEvent('intercom_event_logged', { name, has_metadata: !!metaData });
       await safeCall('logEvent', () => Intercom.logEvent(name, metaData));
     },
 
@@ -257,6 +281,9 @@ export function getIntercomHandlers(send: SendToWebView): BridgeHandlerMap {
 // Safe to call outside the Intercom serialize queue — applyPushStatus's
 // queueTokenRegistration re-enters the queue itself.
 async function runPushPrompt(send: SendToWebView): Promise<void> {
+  trackEvent('push_permission_prompted', {
+    previous_status: cachedPushStatus ?? 'unknown',
+  });
   applyPushStatus(send, await requestPushPermissionPrompt());
 }
 
@@ -404,11 +431,15 @@ export function registerIntercomEventListeners(send: SendToWebView): () => void 
   );
   subs.push(
     emitter.addListener(events.IntercomWindowDidShow, () => {
+      trackEvent('intercom_messenger_opened', {
+        unread_count_at_open: lastUnreadCount ?? 0,
+      });
       send({ type: 'intercomWindowDidShow' });
     })
   );
   subs.push(
     emitter.addListener(events.IntercomWindowDidHide, () => {
+      trackEvent('intercom_messenger_closed');
       send({ type: 'intercomWindowDidHide' });
     })
   );
