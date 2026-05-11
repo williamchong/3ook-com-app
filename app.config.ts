@@ -139,7 +139,7 @@ const config: ExpoConfig = {
       {
         ios: {
           useFrameworks: 'static',
-          forceStaticLinking: ['RNFBApp', 'RNFBAnalytics'],
+          forceStaticLinking: ['RNFBApp', 'RNFBAnalytics', 'RNFBCrashlytics'],
           ccacheEnabled: true,
         },
         android: {
@@ -148,6 +148,15 @@ const config: ExpoConfig = {
       },
     ],
     '@react-native-firebase/app',
+    // Sentry is the source of truth for JS errors; disable Crashlytics' JS
+    // error generation so we don't get duplicate non-fatals. Native crashes
+    // are still captured by Crashlytics regardless.
+    [
+      '@react-native-firebase/crashlytics',
+      {
+        crashlytics_is_error_generation_on_js_crash_enabled: false,
+      },
+    ],
     'expo-sharing',
     './plugins/withAppBoundDomains',
     // Intercom must precede any plugin that registers its own

@@ -1,4 +1,5 @@
 import analytics from '@react-native-firebase/analytics';
+import crashlytics from '@react-native-firebase/crashlytics';
 
 import { posthog } from './posthog';
 
@@ -62,13 +63,18 @@ export async function identify(
     console.warn('[analytics] posthog.identify failed', e);
   }
 
+  const userProps = {
+    is_liker_plus: String(!!isLikerPlus),
+    login_method: loginMethod ?? '',
+    locale: locale ?? '',
+  };
+
   const fa = analytics();
-  const tasks: Promise<void>[] = [
-    fa.setUserProperties({
-      is_liker_plus: String(!!isLikerPlus),
-      login_method: loginMethod ?? '',
-      locale: locale ?? '',
-    }),
+  const cl = crashlytics();
+  const tasks: Promise<unknown>[] = [
+    fa.setUserProperties(userProps),
+    cl.setUserId(userId),
+    cl.setAttributes(userProps),
   ];
   if (gaUserId) tasks.push(fa.setUserId(gaUserId));
   await Promise.all(tasks);
@@ -80,5 +86,9 @@ export async function resetIdentity(): Promise<void> {
   } catch (e) {
     console.warn('[analytics] posthog.reset failed', e);
   }
-  await analytics().setUserId(null);
+  // Crashlytics detaches a user with empty string, not null.
+  await Promise.all<unknown>([
+    analytics().setUserId(null),
+    crashlytics().setUserId(''),
+  ]);
 }
