@@ -55,6 +55,17 @@ function decodeJwtPayload(jwt: string): unknown {
   return JSON.parse(atob(padded));
 }
 
+function getJwtExp(jwt: string): number | undefined {
+  try {
+    const payload = decodeJwtPayload(jwt) as { exp?: unknown } | undefined;
+    return typeof payload?.exp === 'number' ? payload.exp : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+const JWT_EXP_SKEW_S = 30;
+
 async function safeCall<T>(label: string, fn: () => Promise<T>): Promise<T | undefined> {
   try {
     return await fn();
@@ -345,9 +356,6 @@ export function wrapIdentityHandlers(
       }
     }
 
-    // setUserJwt must be called before loginUserWithUserAttributes for
-    // JWT verification to take effect.
-    await safeCall('setUserJwt', () => Intercom.setUserJwt(intercomToken));
     const attrs: UserAttributes = {
       userId,
       email,
@@ -360,6 +368,50 @@ export function wrapIdentityHandlers(
         locale: typeof msg.locale === 'string' ? msg.locale : undefined,
       },
     };
+
+    // loginUserWithUserAttributes re-verifies the JWT and tears down the
+    // session on any verification miss, so skip it when the SDK already has
+    // the same user logged in (covers cold starts where the SDK restored its
+    // session from keychain but our module state is fresh).
+    const incomingKey = userId ?? email;
+    const current = await safeCall('fetchLoggedInUserAttributes', () =>
+      Intercom.fetchLoggedInUserAttributes()
+    );
+    const currentKey = current?.userId ?? current?.email;
+    const sameUser =
+      incomingKey !== undefined &&
+      currentKey !== undefined &&
+      currentKey !== '' &&
+      incomingKey === currentKey;
+
+    if (sameUser) {
+      // updateUser doesn't re-trigger JWT verification, so a stale cached
+      // JWT can't blow up the session here.
+      await safeCall('updateUser', () => Intercom.updateUser(attrs));
+      return;
+    }
+
+    // An expired, undecodable, or malformed token will fail server-side IV
+    // check and leave us with no session at all — worse than keeping the
+    // prior one. Skip and let web retry with a fresh JWT.
+    const incomingExp = getJwtExp(intercomToken);
+    const now = Math.floor(Date.now() / 1000);
+    if (
+      incomingExp === undefined ||
+      !Number.isFinite(incomingExp) ||
+      incomingExp - JWT_EXP_SKEW_S <= now
+    ) {
+      console.warn('[intercom] skipping login: JWT unusable', {
+        exp: incomingExp,
+        now,
+      });
+      return;
+    }
+
+    // Push token must re-register so it migrates to the now-identified user.
+    lastRegisteredToken = null;
+    // setUserJwt must precede loginUserWithUserAttributes for IV to apply.
+    await safeCall('setUserJwt', () => Intercom.setUserJwt(intercomToken));
     await safeCall('loginUserWithUserAttributes', () =>
       Intercom.loginUserWithUserAttributes(attrs)
     );
@@ -371,9 +423,6 @@ export function wrapIdentityHandlers(
       await Promise.all([
         base.identifyUser?.(msg),
         serialize(async () => {
-          // The token attached to the prior guest/user session must be
-          // re-sent so it migrates to the now-identified Intercom user.
-          lastRegisteredToken = null;
           await intercomIdentify(msg);
           await registerPushTokenIfPossible();
         }),
