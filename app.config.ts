@@ -58,6 +58,7 @@ const config: ExpoConfig = {
     infoPlist: {
       CFBundleDisplayName: '3ook Reader',
       ITSAppUsesNonExemptEncryption: false,
+      IntercomUniversalLinkDomains: ['3ook.com'],
       NSMicrophoneUsageDescription:
         'This app uses your microphone to record your voice and create a custom voice for the text-to-speech feature.',
       NSCameraUsageDescription:
