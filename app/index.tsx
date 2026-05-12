@@ -1,11 +1,20 @@
 import * as Application from 'expo-application';
 import * as Linking from 'expo-linking';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { BackHandler, Platform, StyleSheet, View } from 'react-native';
+import {
+  ActivityIndicator,
+  BackHandler,
+  Platform,
+  Pressable,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import WebView, { type WebViewMessageEvent } from 'react-native-webview';
 import type {
   ShouldStartLoadRequest,
+  WebViewErrorEvent,
   WebViewNavigation,
 } from 'react-native-webview/lib/WebViewTypes';
 
@@ -51,12 +60,27 @@ const NATIVE_BRIDGE_FEATURES: readonly string[] = [
 ];
 const NATIVE_BRIDGE_BOOTSTRAP = `(function(){try{window.__nativeBridge=window.__nativeBridge||{};window.__nativeBridge.features=${JSON.stringify(NATIVE_BRIDGE_FEATURES)};}catch(e){}})();true;`;
 
+// Cold-start loads of 3ook.com sometimes fail with transient network errors
+// (NSURLErrorDomain -1004 cannot-connect-to-host being the most common) before
+// the radio/VPN/captive portal has fully settled. Auto-retry by remounting the
+// WebView via a key bump, then fall back to a manual retry overlay.
+const AUTO_RETRY_DELAYS_MS = [1000, 2500];
+const MAX_AUTO_RETRIES = AUTO_RETRY_DELAYS_MS.length;
+// Delay before revealing the spinner so fast recoveries don't flash UI.
+const SPINNER_REVEAL_DELAY_MS = 500;
+
 export default function App() {
   const insets = useSafeAreaInsets();
   const webViewRef = useRef<WebView>(null);
   const canGoBackRef = useRef(false);
   const currentURLRef = useRef<string>('');
   const [initialURL, setInitialURL] = useState<string | null>(null);
+  const [webViewKey, setWebViewKey] = useState(0);
+  const [loadFailed, setLoadFailed] = useState(false);
+  const [isRetryInProgress, setIsRetryInProgress] = useState(false);
+  const retryCountRef = useRef(0);
+  const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const spinnerTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     (async () => {
@@ -114,6 +138,38 @@ export default function App() {
     webViewRef.current?.reload();
   }, []);
 
+  const clearSpinnerTimer = useCallback(() => {
+    if (spinnerTimerRef.current) {
+      clearTimeout(spinnerTimerRef.current);
+      spinnerTimerRef.current = null;
+    }
+  }, []);
+
+  const clearRetryTimer = useCallback(() => {
+    if (retryTimerRef.current) {
+      clearTimeout(retryTimerRef.current);
+      retryTimerRef.current = null;
+    }
+  }, []);
+
+  const scheduleSpinnerReveal = useCallback(() => {
+    if (spinnerTimerRef.current) return;
+    spinnerTimerRef.current = setTimeout(() => {
+      spinnerTimerRef.current = null;
+      setIsRetryInProgress(true);
+    }, SPINNER_REVEAL_DELAY_MS);
+  }, []);
+
+  // Success-only — onLoadEnd also fires on error (after onError), which would
+  // clobber the retry timer we just set. Use onLoad for the success path.
+  const handleLoad = useCallback(() => {
+    retryCountRef.current = 0;
+    clearRetryTimer();
+    clearSpinnerTimer();
+    setLoadFailed(false);
+    setIsRetryInProgress(false);
+  }, [clearRetryTimer, clearSpinnerTimer]);
+
   // Each WebView load lands in a fresh JS context with no memory of prior
   // dispatches; re-emit native state that web listeners want at boot.
   const handleLoadEnd = useCallback(() => {
@@ -121,6 +177,60 @@ export default function App() {
       resyncPushStatusToWeb(sendToWebView);
     }
   }, [sendToWebView]);
+
+  const remountWebView = useCallback(() => {
+    clearRetryTimer();
+    setLoadFailed(false);
+    setWebViewKey((k) => k + 1);
+  }, [clearRetryTimer]);
+
+  const handleManualRetry = useCallback(() => {
+    trackEvent('webview_load_retry', { trigger: 'manual' });
+    retryCountRef.current = 0;
+    scheduleSpinnerReveal();
+    remountWebView();
+  }, [remountWebView, scheduleSpinnerReveal]);
+
+  const handleWebViewError = useCallback(
+    (e: WebViewErrorEvent) => {
+      const { code, domain, description } = e.nativeEvent;
+      // -999 (NSURLErrorCancelled) fires when navigation is preempted, e.g. by
+      // onShouldStartLoadWithRequest returning false to hand off to the system
+      // browser. Not a real load failure — ignore.
+      if (code === -999) return;
+      const attempt = retryCountRef.current;
+      trackEvent('webview_load_failed', {
+        code,
+        domain: domain ?? null,
+        description: description ?? null,
+        retry_count: attempt,
+      });
+      if (attempt < MAX_AUTO_RETRIES) {
+        const delay = AUTO_RETRY_DELAYS_MS[attempt];
+        retryCountRef.current = attempt + 1;
+        scheduleSpinnerReveal();
+        clearRetryTimer();
+        retryTimerRef.current = setTimeout(() => {
+          retryTimerRef.current = null;
+          trackEvent('webview_load_retry', { trigger: 'auto', attempt: attempt + 1 });
+          remountWebView();
+        }, delay);
+      } else {
+        clearSpinnerTimer();
+        clearRetryTimer();
+        setIsRetryInProgress(false);
+        setLoadFailed(true);
+      }
+    },
+    [clearRetryTimer, clearSpinnerTimer, remountWebView, scheduleSpinnerReveal]
+  );
+
+  useEffect(() => {
+    return () => {
+      clearRetryTimer();
+      clearSpinnerTimer();
+    };
+  }, [clearRetryTimer, clearSpinnerTimer]);
 
   // Intercept wallet deep links (wc:, metamask:, etc.) and route non-app-bound
   // top-frame navigations to the system browser — WebKit's app-bound enforcement
@@ -215,6 +325,7 @@ export default function App() {
       <View style={styles.container}>
         {initialURL && (
           <WebView
+            key={webViewKey}
             ref={webViewRef}
             source={{ uri: initialURL }}
             originWhitelist={['*']}
@@ -231,11 +342,36 @@ export default function App() {
             onShouldStartLoadWithRequest={handleNavigationRequest}
             onNavigationStateChange={handleNavigationStateChange}
             onMessage={handleMessage}
+            onLoad={handleLoad}
             onLoadEnd={handleLoadEnd}
             onContentProcessDidTerminate={handleContentProcessDidTerminate}
-            onError={(e) => console.warn('[WebView error]', e.nativeEvent)}
+            onError={handleWebViewError}
             onHttpError={(e) => console.warn('[WebView HTTP error]', e.nativeEvent)}
           />
+        )}
+        {isRetryInProgress && !loadFailed && (
+          <View style={styles.overlay} pointerEvents="none">
+            <ActivityIndicator
+              size="large"
+              color="#131313"
+              accessibilityLabel="Loading"
+              accessibilityRole="progressbar"
+            />
+          </View>
+        )}
+        {loadFailed && (
+          <View style={[styles.overlay, styles.errorOverlay]}>
+            <Text style={styles.errorTitle}>Can&apos;t reach 3ook.com</Text>
+            <Text style={styles.errorBody}>Check your connection and try again.</Text>
+            <Pressable
+              onPress={handleManualRetry}
+              style={({ pressed }) => [styles.retryButton, pressed && styles.retryButtonPressed]}
+              accessibilityRole="button"
+              accessibilityLabel="Retry loading"
+            >
+              <Text style={styles.retryButtonText}>Retry</Text>
+            </Pressable>
+          </View>
         )}
       </View>
     </>
@@ -252,5 +388,45 @@ const styles = StyleSheet.create({
   },
   webview: {
     flex: 1,
+  },
+  overlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#f9f9f9',
+  },
+  errorOverlay: {
+    paddingHorizontal: 32,
+  },
+  errorTitle: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#131313',
+    marginBottom: 8,
+    textAlign: 'center',
+  },
+  errorBody: {
+    fontSize: 14,
+    color: '#5b5b5b',
+    marginBottom: 24,
+    textAlign: 'center',
+  },
+  retryButton: {
+    paddingHorizontal: 24,
+    paddingVertical: 12,
+    borderRadius: 24,
+    backgroundColor: '#131313',
+  },
+  retryButtonPressed: {
+    opacity: 0.7,
+  },
+  retryButtonText: {
+    color: '#f9f9f9',
+    fontSize: 15,
+    fontWeight: '600',
   },
 });
