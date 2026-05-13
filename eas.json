@@ -7,14 +7,17 @@
     "development": {
       "developmentClient": true,
       "distribution": "internal",
+      "node": "24.10.0",
       "cache": { "key": "rnfb24-firebase" }
     },
     "preview": {
       "distribution": "internal",
+      "node": "24.10.0",
       "cache": { "key": "rnfb24-firebase" }
     },
     "production": {
       "autoIncrement": true,
+      "node": "24.10.0",
       "cache": { "key": "rnfb24-firebase" }
     }
   },

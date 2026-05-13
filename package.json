@@ -67,5 +67,8 @@
       "nativeModulesDir": "modules"
     }
   },
+  "engines": {
+    "node": ">=24.3.0"
+  },
   "private": true
 }
