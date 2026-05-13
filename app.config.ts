@@ -45,7 +45,7 @@ const config: ExpoConfig = {
   name: '3ook.com',
   owner: 'likerland',
   slug: '3ook-com-app',
-  version: '1.1.7',
+  version: '1.2.0',
   orientation: 'portrait',
   icon: './assets/images/icon.png',
   scheme: 'com.3ook',
