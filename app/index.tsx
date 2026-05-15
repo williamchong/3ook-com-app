@@ -127,18 +127,56 @@ export default function App() {
 
   // Intercom push campaigns with a "URI on tap" deliver the destination via
   // expo-notifications, not expo-linking, so they bypass the Linking listener
-  // above. Route them through the same navigation as warm deep links.
+  // above. The payload is campaign-authored (server-controlled), so route it
+  // through the same trust tiers as in-WebView navigation: 3ook host → SPA,
+  // allowlisted scheme → OS, well-formed http(s) → system browser. Anything
+  // else (javascript:, data:, custom schemes) is dropped, never opened.
   const handleNotificationDeepLink = useCallback(
     (rawURL: string) => {
       const target = resolveDeepLinkURL(rawURL);
-      if (!target || target === currentURLRef.current) return;
-      trackEvent('launched_with_deep_link', { source: 'push_notification' });
-      currentURLRef.current = target;
-      if (hasLoadedRef.current) {
-        navigateWebView(target);
-      } else {
-        pendingDeepLinkRef.current = target;
+      if (target) {
+        if (target === currentURLRef.current) return;
+        trackEvent('launched_with_deep_link', {
+          source: 'push_notification',
+          disposition: 'webview',
+        });
+        currentURLRef.current = target;
+        if (hasLoadedRef.current) {
+          navigateWebView(target);
+        } else {
+          pendingDeepLinkRef.current = target;
+        }
+        return;
       }
+      if (isDeepLink(rawURL)) {
+        trackEvent('launched_with_deep_link', {
+          source: 'push_notification',
+          disposition: 'os',
+        });
+        openDeepLink(rawURL).catch((e) =>
+          console.warn('[push deep link] failed to open:', e)
+        );
+        return;
+      }
+      try {
+        const { protocol } = new URL(rawURL);
+        if (protocol === 'https:' || protocol === 'http:') {
+          trackEvent('launched_with_deep_link', {
+            source: 'push_notification',
+            disposition: 'external',
+          });
+          openExternalURL(rawURL).catch((e) =>
+            console.warn('[push external link] failed to open:', e)
+          );
+          return;
+        }
+      } catch {
+        // Unparseable URI — fall through to the rejection path.
+      }
+      trackEvent('launched_with_deep_link', {
+        source: 'push_notification',
+        disposition: 'rejected',
+      });
     },
     [navigateWebView]
   );
