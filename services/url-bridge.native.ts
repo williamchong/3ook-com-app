@@ -1,7 +1,7 @@
 import * as Linking from 'expo-linking';
 
 const DEEP_LINK_SCHEME_RE =
-  /^(mailto:|tel:|wc:|metamask:|cbwallet:|rainbow:|trust:)/;
+  /^(mailto:|tel:|wc:|metamask:|cbwallet:|rainbow:|trust:|keplrwallet:)/;
 
 const WALLET_UNIVERSAL_LINK_PREFIXES = [
   'https://metamask.app.link/',
