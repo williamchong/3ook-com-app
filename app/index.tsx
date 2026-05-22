@@ -30,6 +30,12 @@ import { clearHandlers, dispatch, registerHandlers } from '../services/bridge-di
 import { getDownloadHandlers } from '../services/download-bridge';
 import { getIdentityHandlers } from '../services/identity-bridge';
 import {
+  configureIAP,
+  getIAPHandlers,
+  isIAPAvailable,
+  wrapIdentityForIAP,
+} from '../services/iap-bridge';
+import {
   getIntercomHandlers,
   isIntercomAvailable,
   isIntercomPushSupported,
@@ -57,6 +63,8 @@ const NATIVE_BRIDGE_FEATURES: readonly string[] = [
   // Push is currently routed through the Intercom handler (`requestPushPermission`,
   // `pushPermissionChanged`); advertise only when both are usable.
   ...(isIntercomPushSupported() ? ['intercomPush'] : []),
+  // RevenueCat in-app purchases; only when a platform API key is configured.
+  ...(isIAPAvailable() ? ['iap'] : []),
 ];
 const NATIVE_BRIDGE_BOOTSTRAP = `(function(){try{window.__nativeBridge=window.__nativeBridge||{};window.__nativeBridge.features=${JSON.stringify(NATIVE_BRIDGE_FEATURES)};}catch(e){}})();true;`;
 
@@ -191,10 +199,16 @@ export default function App() {
   );
 
   useEffect(() => {
+    configureIAP();
     registerHandlers(getAudioHandlers());
     registerHandlers(getDownloadHandlers());
     registerHandlers(getIntercomHandlers(sendToWebView));
-    registerHandlers(wrapIdentityHandlers(getIdentityHandlers(), sendToWebView));
+    registerHandlers(getIAPHandlers(sendToWebView));
+    // identifyUser/resetUser fan out to analytics (base), RevenueCat logIn/Out
+    // (IAP wrap), then Intercom (outer wrap) — one identity event, three sinks.
+    registerHandlers(
+      wrapIdentityHandlers(wrapIdentityForIAP(getIdentityHandlers()), sendToWebView)
+    );
 
     setupPlayer();
     const unsubscribeAudio = registerEventListeners(sendToWebView);

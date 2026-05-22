@@ -36,6 +36,7 @@ The web app itself lives in a separate repo (`liker-land-v3`, a Nuxt 3 PWA). Thi
 8. **`services/url-bridge.native.ts`** + **`services/url-storage.native.ts`** — Deep-link parsing, last-visited URL persistence, and outbound external-URL handling. Deep links are accepted only for `3ook.com` and subdomains; URL normalization always enforces `app=1`.
 9. **`services/app-bound-domains.js`** + **`plugins/withAppBoundDomains.js`** — Single source of truth for iOS `WKAppBoundDomains` shared by runtime checks and the config plugin.
 10. **`modules/audio-interruption`** + **`modules/battery-optimization`** — Local Expo native modules autolinked via `package.json#expo.autolinking.nativeModulesDir = "modules"`. iOS audio session interruption hooks; Android battery-optimization-exemption prompt.
+11. **`services/iap-bridge.native.ts`** — RevenueCat (`react-native-purchases`) in-app purchases for the Plus subscription. `configureIAP()` runs once on start; `wrapIdentityForIAP` hooks `Purchases.logIn/logOut` into the `identifyUser`/`resetUser` identity events so the RevenueCat `appUserID` equals the backend internal user id (`likerId`, from the identity payload's `likerId` field) — the same id the RevenueCat→backend webhook resolves against. Keys come from `app.config.ts` `extra.revenueCat` (`REVENUECAT_IOS_API_KEY` / `REVENUECAT_ANDROID_API_KEY`); the `iap` capability is advertised only when a platform key is present. Entitlement truth lives on the backend (RevenueCat→backend webhook flips `isLikerPlus`), so the bridge only reports purchase results.
 
 ### Key patterns
 
@@ -47,7 +48,7 @@ The web app itself lives in a separate repo (`liker-land-v3`, a Nuxt 3 PWA). Thi
 
 ### Message protocol
 
-Web → Native messages are JSON with `type` and payload fields. Audio types: `load`, `pause`, `resume`, `stop`, `skipTo`, `setRate`, `seekTo`. Other bridges add their own types (e.g. identity sync, Intercom updates, push-permission requests, downloads). Native → Web events are sent as `CustomEvent` from injected JS — `nativeAudioEvent` for audio (`playbackState`, `trackChanged`, `queueEnded`) and `nativeBridgeEvent` for everything else.
+Web → Native messages are JSON with `type` and payload fields. Audio types: `load`, `pause`, `resume`, `stop`, `skipTo`, `setRate`, `seekTo`. IAP types: `iapPurchase` (`{ period, appUserId }` — `appUserId` is the backend internal user id / `likerId`, the RevenueCat `app_user_id`, NOT the evmWallet), `iapRestore`, `iapGetOfferings`. Other bridges add their own types (e.g. identity sync, Intercom updates, push-permission requests, downloads). Native → Web events are sent as `CustomEvent` from injected JS — `nativeAudioEvent` for audio (`playbackState`, `trackChanged`, `queueEnded`) and `nativeBridgeEvent` for everything else (IAP: `iapPurchaseResult`, `iapRestoreResult`, `iapOfferings`).
 
 ### Observability
 

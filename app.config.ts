@@ -41,6 +41,20 @@ if (!intercomPlugin) {
   );
 }
 
+// RevenueCat (in-app purchases) public SDK keys, surfaced to the runtime via
+// `extra` so the iap-bridge can read the platform-appropriate key. No native
+// config plugin is required — `react-native-purchases` autolinks on prebuild.
+const revenueCatEnv = {
+  iosApiKey: process.env.REVENUECAT_IOS_API_KEY,
+  androidApiKey: process.env.REVENUECAT_ANDROID_API_KEY,
+};
+
+if (!revenueCatEnv.iosApiKey && !revenueCatEnv.androidApiKey) {
+  console.warn(
+    '[iap] REVENUECAT_IOS_API_KEY / REVENUECAT_ANDROID_API_KEY missing — in-app purchases disabled in this build.'
+  );
+}
+
 const config: ExpoConfig = {
   name: '3ook.com',
   owner: 'likerland',
@@ -176,6 +190,7 @@ const config: ExpoConfig = {
     eas: {
       projectId: 'b9b3551b-65fa-4f8e-b570-2bbb220b971b',
     },
+    revenueCat: revenueCatEnv,
   },
 };
 
