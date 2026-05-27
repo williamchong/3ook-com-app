@@ -1,4 +1,4 @@
-import type { BridgeHandlerMap } from './bridge-dispatcher';
+import type { BridgeHandlerMap, SendToWebView } from './bridge-dispatcher';
 
 // Web builds have no StoreKit / Play Billing — every export is a no-op so the
 // shared bridge can be imported without dragging `react-native-purchases` into
@@ -9,7 +9,7 @@ export function isIAPAvailable(): boolean {
 
 export function configureIAP(): void {}
 
-export function getIAPHandlers(): BridgeHandlerMap {
+export function getIAPHandlers(_send: SendToWebView): BridgeHandlerMap {
   return {};
 }
 
