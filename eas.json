@@ -8,17 +8,17 @@
       "developmentClient": true,
       "distribution": "internal",
       "node": "24.10.0",
-      "cache": { "key": "rnfb24-iap" }
+      "cache": { "key": "rnfb24-netinfo" }
     },
     "preview": {
       "distribution": "internal",
       "node": "24.10.0",
-      "cache": { "key": "rnfb24-iap" }
+      "cache": { "key": "rnfb24-netinfo" }
     },
     "production": {
       "autoIncrement": true,
       "node": "24.10.0",
-      "cache": { "key": "rnfb24-iap" }
+      "cache": { "key": "rnfb24-netinfo" }
     }
   },
   "submit": {

@@ -1,3 +1,4 @@
+import NetInfo, { type NetInfoState } from '@react-native-community/netinfo';
 import * as Application from 'expo-application';
 import * as Linking from 'expo-linking';
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -68,6 +69,10 @@ const NATIVE_BRIDGE_FEATURES: readonly string[] = [
 ];
 const NATIVE_BRIDGE_BOOTSTRAP = `(function(){try{window.__nativeBridge=window.__nativeBridge||{};window.__nativeBridge.features=${JSON.stringify(NATIVE_BRIDGE_FEATURES)};}catch(e){}})();true;`;
 
+// NetInfo reports isConnected as boolean | null; treat null/unknown as online so
+// the WebView is never gated offline on an indeterminate signal.
+const isStateOnline = (state: NetInfoState) => state.isConnected !== false;
+
 // Cold-start loads of 3ook.com sometimes fail with transient network errors
 // (NSURLErrorDomain -1004 cannot-connect-to-host being the most common) before
 // the radio/VPN/captive portal has fully settled. Auto-retry by remounting the
@@ -84,6 +89,13 @@ export default function App() {
   const [webViewKey, setWebViewKey] = useState(0);
   const [loadFailed, setLoadFailed] = useState(false);
   const [isRetryInProgress, setIsRetryInProgress] = useState(false);
+  // Connectivity drives two things: the Android cacheMode (serve the cached PWA
+  // shell when offline so the service worker can boot) and auto-recovery (reload
+  // the moment the connection returns instead of stranding the user on a manual
+  // Retry button). Mirror to a ref so the error/recovery callbacks read the
+  // current value without re-subscribing.
+  const [isOnline, setIsOnline] = useState(true);
+  const isOnlineRef = useRef(true);
   const retryCountRef = useRef(0);
   const hadLoadFailureRef = useRef(false);
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -94,6 +106,14 @@ export default function App() {
   const pendingDeepLinkRef = useRef<string | null>(null);
 
   useEffect(() => {
+    // Kick off connectivity resolution in parallel with URL resolution — it's
+    // independent of the URL, and we only need it right before the first mount,
+    // so overlapping it with the Linking/storage awaits keeps it off the
+    // cold-start critical path. Default to online if NetInfo is unavailable.
+    const connectivity = Promise.resolve()
+      .then(() => NetInfo.fetch())
+      .then(isStateOnline)
+      .catch(() => true);
     (async () => {
       const deepLink = await Linking.getInitialURL();
       const resolved = resolveDeepLinkURL(deepLink);
@@ -105,6 +125,13 @@ export default function App() {
       }
       const url = resolved ?? (await getInitialURL());
       currentURLRef.current = url;
+      // Seed connectivity before the WebView's first mount. Without this the
+      // initial render assumes online (LOAD_DEFAULT) and a cold offline launch
+      // fails on the network before NetInfo reports back; seeding it here means
+      // the first navigation already uses the offline cache mode on Android.
+      const online = await connectivity;
+      isOnlineRef.current = online;
+      setIsOnline(online);
       setInitialURL(url);
     })();
   }, []);
@@ -301,12 +328,26 @@ export default function App() {
       if (code === -999) return;
       hadLoadFailureRef.current = true;
       const attempt = retryCountRef.current;
+      const offline = !isOnlineRef.current;
       trackEvent('webview_load_failed', {
         code,
         domain: domain ?? null,
         description: description ?? null,
         retry_count: attempt,
+        offline,
       });
+      // Offline: remounting to the network just fails again, and on Android the
+      // cached PWA shell was already attempted via cacheMode (LOAD_CACHE_ELSE_
+      // NETWORK) on this same load. So skip the auto-retry burst, surface the
+      // offline overlay immediately, and let the NetInfo listener auto-recover
+      // when the connection returns.
+      if (offline) {
+        clearRetryTimer();
+        retryCountRef.current = 0;
+        setIsRetryInProgress(false);
+        setLoadFailed(true);
+        return;
+      }
       if (attempt < MAX_AUTO_RETRIES) {
         const delay = AUTO_RETRY_DELAYS_MS[attempt];
         retryCountRef.current = attempt + 1;
@@ -331,6 +372,36 @@ export default function App() {
       clearRetryTimer();
     };
   }, [clearRetryTimer]);
+
+  // Auto-recover when connectivity returns. A cold offline launch lands on the
+  // offline overlay (or a cached shell); the moment the radio reconnects, remount
+  // for a fresh online load instead of stranding the user on the manual Retry
+  // button. Also keeps isOnline/cacheMode in sync for the offline error path.
+  useEffect(() => {
+    // Guard the subscription: if the RNCNetInfo native module is ever missing
+    // (e.g. a JS-only update shipped onto a binary built before this dependency),
+    // addEventListener throws — swallow it so the rest of the screen still mounts
+    // instead of crashing; the app just loses auto-recovery, not core function.
+    try {
+      const unsub = NetInfo.addEventListener((state) => {
+        const online = isStateOnline(state);
+        // NetInfo fires on any network detail change (signal, SSID, cellular
+        // subtype); only act on an actual connected/disconnected flip.
+        if (online === isOnlineRef.current) return;
+        isOnlineRef.current = online;
+        setIsOnline(online);
+        if (online && hadLoadFailureRef.current) {
+          trackEvent('webview_load_retry', { trigger: 'reconnect' });
+          retryCountRef.current = 0;
+          setIsRetryInProgress(true);
+          remountWebView();
+        }
+      });
+      return unsub;
+    } catch {
+      // Native module absent — skip auto-recovery.
+    }
+  }, [remountWebView]);
 
   // Intercept wallet deep links (wc:, metamask:, etc.) and route non-app-bound
   // top-frame navigations to the system browser — WebKit's app-bound enforcement
@@ -437,6 +508,16 @@ export default function App() {
             pullToRefreshEnabled={true}
             allowsBackForwardNavigationGestures={true}
             limitsNavigationsToAppBoundDomains={Platform.OS === 'ios'}
+            // Android only: when offline, serve the last-cached shell (even if
+            // expired) so the PWA's service worker can boot and render its
+            // offline content. Stays LOAD_DEFAULT while online so fresh loads
+            // are never served stale. iOS ignores this and relies on its SW.
+            cacheMode={!isOnline ? 'LOAD_CACHE_ELSE_NETWORK' : 'LOAD_DEFAULT'}
+            // Suppress react-native-webview's built-in error page (the raw
+            // "Error loading page / net::ERR_INTERNET_DISCONNECTED" Chromium
+            // screen on Android, blank on iOS). Our overlay below is the single
+            // error surface; render a matching-color blank so there's no flash.
+            renderError={() => <View style={styles.errorFallback} />}
             webviewDebuggingEnabled={__DEV__}
             injectedJavaScriptBeforeContentLoaded={NATIVE_BRIDGE_BOOTSTRAP}
             onShouldStartLoadWithRequest={handleNavigationRequest}
@@ -462,8 +543,14 @@ export default function App() {
         )}
         {loadFailed && (
           <View style={[styles.overlay, styles.errorOverlay]}>
-            <Text style={styles.errorTitle}>Can&apos;t reach 3ook.com</Text>
-            <Text style={styles.errorBody}>Check your connection and try again.</Text>
+            <Text style={styles.errorTitle}>
+              {isOnline ? "Can't reach 3ook.com" : "You're offline"}
+            </Text>
+            <Text style={styles.errorBody}>
+              {isOnline
+                ? 'Check your connection and try again.'
+                : 'Reconnect to load 3ook.com. Downloaded content stays available.'}
+            </Text>
             <Pressable
               onPress={handleManualRetry}
               style={({ pressed }) => [styles.retryButton, pressed && styles.retryButtonPressed]}
@@ -498,6 +585,10 @@ const styles = StyleSheet.create({
     bottom: 0,
     alignItems: 'center',
     justifyContent: 'center',
+    backgroundColor: '#f9f9f9',
+  },
+  errorFallback: {
+    flex: 1,
     backgroundColor: '#f9f9f9',
   },
   errorOverlay: {
