@@ -549,7 +549,7 @@ export default function App() {
             <Text style={styles.errorBody}>
               {isOnline
                 ? 'Check your connection and try again.'
-                : 'Reconnect to load 3ook.com. Downloaded content stays available.'}
+                : 'Reconnect to the internet to use 3ook.com.'}
             </Text>
             <Pressable
               onPress={handleManualRetry}
