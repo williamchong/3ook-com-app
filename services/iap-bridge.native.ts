@@ -5,12 +5,22 @@ import type { CustomerInfo, PurchasesPackage, PurchasesStoreProduct } from 'reac
 
 import { trackEvent } from './analytics';
 import type { BridgeHandlerMap, SendToWebView } from './bridge-dispatcher';
+import { openExternalURL } from './url-bridge';
 
 // Entitlement identifier configured in the RevenueCat dashboard. A web (Stripe)
 // or mobile (StoreKit / Play Billing) subscriber both resolve to this single
 // entitlement, so feature gating is identical across platforms. Must match the
 // identifier set up in the dashboard.
 const PLUS_ENTITLEMENT_ID = 'plus';
+
+// Generic store subscription-management pages. Used as a fallback when
+// RevenueCat's showManageSubscriptions() throws because it can't resolve a
+// product-specific management URL — notably sandbox/test subscriptions (where
+// managementURL is null), so an active subscriber can still reach the store UI.
+const MANAGE_SUBSCRIPTION_URL =
+  Platform.OS === 'ios'
+    ? 'https://apps.apple.com/account/subscriptions'
+    : 'https://play.google.com/store/account/subscriptions';
 
 type RevenueCatConfig = { iosApiKey?: string; androidApiKey?: string };
 
@@ -280,16 +290,27 @@ export function getIAPHandlers(send: SendToWebView): BridgeHandlerMap {
     // is presented — the SDK can't report what the user changed, so the web
     // just refreshes the session afterward.
     iapManageSubscription: async () => {
+      let isFallback = false;
       try {
         await Purchases.showManageSubscriptions();
-        send({ type: 'iapManageResult', status: 'success' });
-        trackEvent('iap_manage_opened');
       } catch (e) {
-        const err = e as { message?: string };
-        send({ type: 'iapManageResult', status: 'error', message: err.message || 'Manage failed' });
-        trackEvent('iap_manage_error');
-        console.warn('[iap] manage subscription failed', e);
+        // RevenueCat can't always resolve a product-specific management URL
+        // (sandbox subscriptions have a null managementURL, and some devices
+        // can't open the store intent). Fall back to the store's generic
+        // subscriptions page so an active subscriber isn't left stranded.
+        try {
+          await openExternalURL(MANAGE_SUBSCRIPTION_URL);
+          isFallback = true;
+        } catch (fallbackError) {
+          const err = e as { message?: string };
+          send({ type: 'iapManageResult', status: 'error', message: err.message || 'Manage failed' });
+          trackEvent('iap_manage_error');
+          console.warn('[iap] manage subscription failed', e, fallbackError);
+          return;
+        }
       }
+      send({ type: 'iapManageResult', status: 'success' });
+      trackEvent('iap_manage_opened', isFallback ? { is_fallback: true } : undefined);
     },
 
     // Lets the web display App Store / Play-accurate prices instead of the
