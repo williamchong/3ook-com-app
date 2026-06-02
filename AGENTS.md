@@ -54,6 +54,10 @@ Web → Native messages are JSON with `type` and payload fields. Audio types: `l
 
 Sentry (`@sentry/react-native`), Firebase Analytics, and PostHog (`services/posthog.ts`) are wired up. For PostHog details, refer to the code/config in this repo rather than hard-coded account metadata.
 
+## Code Conventions
+
+- Comments — keep concise, at most 3 lines. Avoid breaking lines mid-sentence; break at punctuation when needed.
+
 ## Commit Messages
 
 Gitmoji style: `⬆️ Upgrade dependencies`, `✨ Add feature`, `🐛 Fix bug`, etc.
