@@ -113,7 +113,7 @@ async function ensureSession() {
 // Caller must invoke this inside the serialize() queue: Identity Verification
 // requires the JWT to land before the token attaches, otherwise the token
 // registers against the prior (or guest) session.
-async function registerPushTokenIfPossible() {
+async function registerPushTokenIfPossible(knownToken?: string) {
   if (!loadedIntercom) return;
   if (!isPushAvailable()) return;
   const status = await readPushStatus();
@@ -121,7 +121,14 @@ async function registerPushTokenIfPossible() {
   const { Intercom } = loadedIntercom;
   const loggedIn = await safeCall('isUserLoggedIn', () => Intercom.isUserLoggedIn());
   if (!loggedIn) return;
-  const token = await getCurrentDeviceToken();
+  // Prefer the token handed to us by the device-token listener. Calling
+  // getDevicePushTokenAsync() here re-invokes registerForRemoteNotifications,
+  // which re-fires that same listener — so fetching it from the listener path
+  // would spin an infinite registration loop (keychain + APNs churn pegging the
+  // CPU whenever a logged-in user has push granted). Only fall back to a fetch
+  // for eager callers that have no token in hand; that single fetch fires the
+  // listener once, which then re-enters here with the token and dedupes out.
+  const token = knownToken ?? (await getCurrentDeviceToken());
   if (!token) return;
   if (token === lastRegisteredToken) return;
   const tokenChanged = lastRegisteredToken !== null;
@@ -167,9 +174,11 @@ function dispatchPushStatus(send: SendToWebView, status: PushPermissionStatus): 
   send({ type: 'pushPermissionChanged', status });
 }
 
-// Inner dedupe (lastRegisteredToken) makes eager calls cheap.
-function queueTokenRegistration(): void {
-  serialize(() => registerPushTokenIfPossible());
+// Inner dedupe (lastRegisteredToken) makes eager calls cheap. Pass the token
+// through when it came from the device-token listener so registration doesn't
+// re-fetch (and thereby re-trigger the listener — see registerPushTokenIfPossible).
+function queueTokenRegistration(knownToken?: string): void {
+  serialize(() => registerPushTokenIfPossible(knownToken));
 }
 
 function applyPushStatus(send: SendToWebView, status: PushPermissionStatus): void {
@@ -524,8 +533,8 @@ export function registerIntercomEventListeners(
   // APNs/FCM rotates tokens occasionally (app restore, FCM key roll); the
   // registration helper gates on session+permission so this is safe to fire
   // eagerly.
-  const unsubToken = addDeviceTokenListener(() => {
-    queueTokenRegistration();
+  const unsubToken = addDeviceTokenListener((token) => {
+    queueTokenRegistration(token);
   });
 
   // expo-notifications buffers the most recent response until a JS listener
