@@ -75,6 +75,26 @@ function packageForPeriod(
   return packages.find((p) => p.packageType === wanted);
 }
 
+// Custom subscriber attributes the web forwards to RevenueCat (gift book class id,
+// affiliate channel, ad-attribution ids) so they reach the backend grant webhook
+// in the event's subscriber_attributes — the IAP analogue of Stripe checkout
+// metadata. Plain string values are kept, and reserved ($-prefixed) keys are
+// dropped so the web can never clobber RevenueCat's own attributes (e.g. $email,
+// $idfa). Empty strings are kept on purpose: the web sends '' to clear a sticky
+// attribute (e.g. a prior gift's plusGiftClassId), which RevenueCat treats as a
+// tombstone — filtering them out would leave the stale value and re-grant the gift.
+function extractSubscriberAttributes(value: unknown): Record<string, string> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  const result: Record<string, string> = {};
+  for (const [rawKey, raw] of Object.entries(value as Record<string, unknown>)) {
+    const key = rawKey.trim();
+    if (!key || key.startsWith('$')) continue;
+    if (typeof raw !== 'string') continue;
+    result[key] = raw.trim();
+  }
+  return result;
+}
+
 // The web's trial model is expressed in days; store intro durations are
 // period+unit (iOS `periodUnit`, Android `Period.unit`, both DAY/WEEK/MONTH/YEAR).
 // Month/year are approximated so "2 weeks" → 14, "1 month" → 30 for display copy.
@@ -227,6 +247,20 @@ export function getIAPHandlers(send: SendToWebView): BridgeHandlerMap {
           send({ type: 'iapPurchaseResult', status: 'error', period, message: 'No package available' });
           trackEvent('iap_purchase_error', { period, reason: 'no_package' });
           return;
+        }
+        // Set the web's gift/affiliate/attribution as subscriber attributes right
+        // before the purchase so they sync with the receipt and land on the backend
+        // grant webhook. Best-effort — a failed sync is logged, never fails the purchase.
+        const attributes = extractSubscriberAttributes(msg.attributes);
+        if (Object.keys(attributes).length) {
+          try {
+            // Await so the attributes are flushed to RevenueCat before the purchase
+            // sync, and so a failure is caught here rather than surfacing as an
+            // unhandled rejection. Best-effort — never block the purchase on it.
+            await Purchases.setAttributes(attributes);
+          } catch (attrErr) {
+            console.warn('[iap] failed to set subscriber attributes', attrErr);
+          }
         }
         const { customerInfo } = await Purchases.purchasePackage(pkg);
         const isPlus = hasPlus(customerInfo);
