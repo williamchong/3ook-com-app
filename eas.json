@@ -8,17 +8,17 @@
       "developmentClient": true,
       "distribution": "internal",
       "node": "24.10.0",
-      "cache": { "key": "rn-from-source-1" }
+      "cache": { "key": "no-precompiled-modules-1" }
     },
     "preview": {
       "distribution": "internal",
       "node": "24.10.0",
-      "cache": { "key": "rn-from-source-1" }
+      "cache": { "key": "no-precompiled-modules-1" }
     },
     "production": {
       "autoIncrement": true,
       "node": "24.10.0",
-      "cache": { "key": "rn-from-source-1" }
+      "cache": { "key": "no-precompiled-modules-1" }
     }
   },
   "submit": {
