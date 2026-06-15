@@ -13,7 +13,7 @@
   },
   "dependencies": {
     "@expo/vector-icons": "^15.0.3",
-    "@intercom/intercom-react-native": "^10.0.1",
+    "@intercom/intercom-react-native": "^10.2.0",
     "@preeternal/react-native-cookie-manager": "^6.3.0",
     "@react-native-community/netinfo": "11.5.2",
     "@react-native-firebase/analytics": "^24.0.0",
