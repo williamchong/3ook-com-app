@@ -166,6 +166,10 @@ const config: ExpoConfig = {
           useFrameworks: 'static',
           forceStaticLinking: ['RNFBApp', 'RNFBAnalytics', 'RNFBCrashlytics'],
           ccacheEnabled: true,
+          // Build RN from source to disable Expo SDK 55 precompiled modules,
+          // which EAS auto-enables and which ship a black screen on device
+          // (debug-flavor xcframeworks leak into the release archive).
+          buildReactNativeFromSource: true,
         },
         android: {
           buildArchs: ['arm64-v8a'],
