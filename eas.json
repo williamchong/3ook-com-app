@@ -8,17 +8,17 @@
       "developmentClient": true,
       "distribution": "internal",
       "node": "24.10.0",
-      "cache": { "key": "rnfb24-netinfo" }
+      "cache": { "key": "posthog447" }
     },
     "preview": {
       "distribution": "internal",
       "node": "24.10.0",
-      "cache": { "key": "rnfb24-netinfo" }
+      "cache": { "key": "posthog447" }
     },
     "production": {
       "autoIncrement": true,
       "node": "24.10.0",
-      "cache": { "key": "rnfb24-netinfo" }
+      "cache": { "key": "posthog447" }
     }
   },
   "submit": {
