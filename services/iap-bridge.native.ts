@@ -95,6 +95,38 @@ function extractSubscriberAttributes(value: unknown): Record<string, string> {
   return result;
 }
 
+// Mirror utm_campaign / utm_source onto RevenueCat's reserved $campaign /
+// $mediaSource so RC's attribution surfaces populate. Additive: raw utm* keys
+// stay for the backend webhook; looser UTM fields aren't mapped. Best-effort.
+async function applyAttributionAttributes(attributes: Record<string, string>): Promise<void> {
+  const ops: Promise<void>[] = [];
+  if (attributes.utmCampaign) ops.push(Purchases.setCampaign(attributes.utmCampaign));
+  if (attributes.utmSource) ops.push(Purchases.setMediaSource(attributes.utmSource));
+  if (!ops.length) return;
+  try {
+    await Promise.all(ops);
+  } catch (e) {
+    console.warn('[iap] failed to set attribution attributes', e);
+  }
+}
+
+// Populate RevenueCat's reserved $email / $displayName from the identity payload
+// so the dashboard profile resolves a real person instead of a bare appUserID.
+// Set only when present (never clobber with empty strings). Best-effort and additive.
+async function applyIdentityAttributes(msg: Record<string, unknown>): Promise<void> {
+  const ops: Promise<void>[] = [];
+  const email = typeof msg.email === 'string' ? msg.email.trim() : '';
+  const displayName = typeof msg.displayName === 'string' ? msg.displayName.trim() : '';
+  if (email) ops.push(Purchases.setEmail(email));
+  if (displayName) ops.push(Purchases.setDisplayName(displayName));
+  if (!ops.length) return;
+  try {
+    await Promise.all(ops);
+  } catch (e) {
+    console.warn('[iap] failed to set identity attributes', e);
+  }
+}
+
 // The web's trial model is expressed in days; store intro durations are
 // period+unit (iOS `periodUnit`, Android `Period.unit`, both DAY/WEEK/MONTH/YEAR).
 // Month/year are approximated so "2 weeks" → 14, "1 month" → 30 for display copy.
@@ -190,7 +222,11 @@ export function wrapIdentityForIAP(base: BridgeHandlerMap): BridgeHandlerMap {
       const appUserId = normalizeLikerId(msg.likerId);
       await Promise.all([
         base.identifyUser?.(msg),
-        ensureLoggedIn(appUserId),
+        // Set $email / $displayName only after login succeeds, so they attach to
+        // the resolved appUserID rather than a soon-to-be-merged anonymous one.
+        (async () => {
+          if (await ensureLoggedIn(appUserId)) await applyIdentityAttributes(msg);
+        })(),
       ]);
     },
     resetUser: async (msg) => {
@@ -261,6 +297,9 @@ export function getIAPHandlers(send: SendToWebView): BridgeHandlerMap {
           } catch (attrErr) {
             console.warn('[iap] failed to set subscriber attributes', attrErr);
           }
+          // Also mirror utm_campaign / utm_source onto RevenueCat's reserved
+          // attribution attributes so RC's own surfaces populate.
+          await applyAttributionAttributes(attributes);
         }
         const { customerInfo } = await Purchases.purchasePackage(pkg);
         const isPlus = hasPlus(customerInfo);
