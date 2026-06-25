@@ -403,6 +403,14 @@ export function wrapIdentityHandlers(
       },
     };
 
+    // Validate once for both paths below: an expired/undecodable token fails IV.
+    const incomingExp = getJwtExp(intercomToken);
+    const now = Math.floor(Date.now() / 1000);
+    const jwtUsable =
+      incomingExp !== undefined &&
+      Number.isFinite(incomingExp) &&
+      incomingExp - JWT_EXP_SKEW_S > now;
+
     // loginUserWithUserAttributes re-verifies the JWT and tears down the
     // session on any verification miss, so skip it when the SDK already has
     // the same user logged in (covers cold starts where the SDK restored its
@@ -419,8 +427,12 @@ export function wrapIdentityHandlers(
       incomingKey === currentKey;
 
     if (sameUser) {
-      // updateUser doesn't re-trigger JWT verification, so a stale cached
-      // JWT can't blow up the session here.
+      // SDK restores session identity across launches but not the JWT, so the
+      // messenger fails IV ("Content could not be loaded") until re-set. Unlike
+      // login, setUserJwt re-applies the token without tearing the session down.
+      if (jwtUsable) {
+        await safeCall('setUserJwt', () => Intercom.setUserJwt(intercomToken));
+      }
       await safeCall('updateUser', () => Intercom.updateUser(attrs));
       return;
     }
@@ -428,13 +440,7 @@ export function wrapIdentityHandlers(
     // An expired, undecodable, or malformed token will fail server-side IV
     // check and leave us with no session at all — worse than keeping the
     // prior one. Skip and let web retry with a fresh JWT.
-    const incomingExp = getJwtExp(intercomToken);
-    const now = Math.floor(Date.now() / 1000);
-    if (
-      incomingExp === undefined ||
-      !Number.isFinite(incomingExp) ||
-      incomingExp - JWT_EXP_SKEW_S <= now
-    ) {
+    if (!jwtUsable) {
       console.warn('[intercom] skipping login: JWT unusable', {
         exp: incomingExp,
         now,
