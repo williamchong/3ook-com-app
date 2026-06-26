@@ -102,21 +102,11 @@ const config: ExpoConfig = {
       {
         action: 'VIEW',
         autoVerify: true,
-        // Allowlist only the surfaces the native shell improves on the web:
-        // the reader and the owned-content shelf (background audio + lock
-        // screen). Everything else — store/checkout/plus/gift (IAP policy),
-        // account/wallet flows, marketing, and Stripe Connect OAuth callbacks
-        // under /settings/connect — stays in the browser. Android intent
-        // filters can't negate a path, so this is an inclusion list, not an
-        // exclusion of /store. Each surface needs an /en/ twin because
-        // @nuxtjs/i18n uses `prefix_except_default` (defaultLocale zh-Hant is
-        // unprefixed, English is served under /en/). Keep this in sync with
-        // the iOS AASA `components` on the web (liker-land-v3).
         data: [
-          { scheme: 'https', host: '3ook.com', pathPrefix: '/reader' },
-          { scheme: 'https', host: '3ook.com', pathPrefix: '/en/reader' },
-          { scheme: 'https', host: '3ook.com', pathPrefix: '/shelf' },
-          { scheme: 'https', host: '3ook.com', pathPrefix: '/en/shelf' },
+          {
+            scheme: 'https',
+            host: '3ook.com',
+          },
         ],
         category: ['BROWSABLE', 'DEFAULT'],
       },
