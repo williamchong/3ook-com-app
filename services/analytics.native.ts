@@ -80,6 +80,18 @@ export async function identify(
   await Promise.all(tasks);
 }
 
+// Firebase App Instance ID. Exposed so the IAP bridge can mirror it onto
+// RevenueCat's reserved $firebaseAppInstanceId attribute, keeping the firebase
+// SDK dep contained in this module.
+export async function getFirebaseAppInstanceId(): Promise<string | null> {
+  try {
+    return await analytics().getAppInstanceId();
+  } catch (e) {
+    console.warn('[analytics] getAppInstanceId failed', e);
+    return null;
+  }
+}
+
 export async function resetIdentity(): Promise<void> {
   try {
     posthog.reset();

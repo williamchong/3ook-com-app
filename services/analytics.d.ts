@@ -20,3 +20,5 @@ export function identify(
 ): Promise<void>;
 
 export function resetIdentity(): Promise<void>;
+
+export function getFirebaseAppInstanceId(): Promise<string | null>;

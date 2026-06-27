@@ -8,3 +8,7 @@ export async function identify(
 ): Promise<void> {}
 
 export async function resetIdentity(): Promise<void> {}
+
+export async function getFirebaseAppInstanceId(): Promise<string | null> {
+  return null;
+}

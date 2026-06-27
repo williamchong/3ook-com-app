@@ -3,8 +3,9 @@ import { Platform } from 'react-native';
 import Purchases, { PACKAGE_TYPE } from 'react-native-purchases';
 import type { CustomerInfo, PurchasesPackage, PurchasesStoreProduct } from 'react-native-purchases';
 
-import { trackEvent } from './analytics';
+import { getFirebaseAppInstanceId, trackEvent } from './analytics';
 import type { BridgeHandlerMap, SendToWebView } from './bridge-dispatcher';
+import { addDeviceTokenListener, getCurrentDeviceToken } from './push-bridge';
 import { openExternalURL } from './url-bridge';
 
 // Entitlement identifier configured in the RevenueCat dashboard. A web (Stripe)
@@ -38,6 +39,17 @@ export function isIAPAvailable(): boolean {
 
 let configured = false;
 
+// Latest device push token (APNs/FCM), kept current by the listener set up in
+// configureIAP. Setting it on each delivery attaches it to the current RC user;
+// applyDeviceAttributes re-asserts it per login (RC scopes attributes to the
+// current appUserID). Null until the first token is delivered.
+let knownPushToken: string | null = null;
+function rememberPushToken(token: string): void {
+  if (!token) return;
+  knownPushToken = token;
+  Purchases.setPushToken(token).catch((e) => console.warn('[iap] setPushToken failed', e));
+}
+
 // Configure once on app start (singleton). Anonymous until the identity bridge
 // logs the user in via wrapIdentityForIAP; pairing logIn with `identifyUser`
 // keeps the RevenueCat appUserID equal to the backend internal user id (likerId).
@@ -50,6 +62,14 @@ export function configureIAP(): void {
   }
   Purchases.configure({ apiKey, appUserID: null });
   configured = true;
+  // Source the push token from the listener, never the identify path:
+  // getDevicePushTokenAsync re-triggers remote-registration, so fetching it on
+  // every identify would churn APNs/FCM registration (see intercom-bridge). One
+  // bootstrap fetch to register, then the listener delivers refreshes.
+  addDeviceTokenListener(rememberPushToken);
+  getCurrentDeviceToken().then((token) => {
+    if (token) rememberPushToken(token);
+  });
 }
 
 function hasPlus(customerInfo: CustomerInfo): boolean {
@@ -110,20 +130,43 @@ async function applyAttributionAttributes(attributes: Record<string, string>): P
   }
 }
 
-// Populate RevenueCat's reserved $email / $displayName from the identity payload
-// so the dashboard profile resolves a real person instead of a bare appUserID.
-// Set only when present (never clobber with empty strings). Best-effort and additive.
+// Populate RevenueCat's reserved identity/integration attributes from the
+// identity payload so the dashboard resolves a real person and RC's PostHog
+// integration stitches to the same person. $posthogUserId is the evmWallet
+// (`userId`) both web and native identify PostHog under — so RC's events attach
+// to that unified person; PostHog has no dedicated setter so it goes through
+// setAttributes. Set only when present (RC treats '' as a delete). Best-effort.
 async function applyIdentityAttributes(msg: Record<string, unknown>): Promise<void> {
   const ops: Promise<void>[] = [];
   const email = typeof msg.email === 'string' ? msg.email.trim() : '';
   const displayName = typeof msg.displayName === 'string' ? msg.displayName.trim() : '';
+  const posthogUserId = typeof msg.userId === 'string' ? msg.userId.trim() : '';
   if (email) ops.push(Purchases.setEmail(email));
   if (displayName) ops.push(Purchases.setDisplayName(displayName));
+  if (posthogUserId) ops.push(Purchases.setAttributes({ $posthogUserId: posthogUserId }));
   if (!ops.length) return;
   try {
     await Promise.all(ops);
   } catch (e) {
     console.warn('[iap] failed to set identity attributes', e);
+  }
+}
+
+// Populate RevenueCat's reserved device attributes (push token, Firebase app
+// instance id) so RC's push re-engagement and Firebase integrations resolve the
+// same device. Re-asserts the cached push token (never re-fetches — see
+// configureIAP) so it attaches to the logged-in user. Set only when present (RC
+// treats '' as a delete). Best-effort and additive.
+async function applyDeviceAttributes(): Promise<void> {
+  const firebaseAppInstanceId = await getFirebaseAppInstanceId();
+  const ops: Promise<void>[] = [];
+  if (knownPushToken) ops.push(Purchases.setPushToken(knownPushToken));
+  if (firebaseAppInstanceId) ops.push(Purchases.setFirebaseAppInstanceID(firebaseAppInstanceId));
+  if (!ops.length) return;
+  try {
+    await Promise.all(ops);
+  } catch (e) {
+    console.warn('[iap] failed to set device attributes', e);
   }
 }
 
@@ -222,10 +265,12 @@ export function wrapIdentityForIAP(base: BridgeHandlerMap): BridgeHandlerMap {
       const appUserId = normalizeLikerId(msg.likerId);
       await Promise.all([
         base.identifyUser?.(msg),
-        // Set $email / $displayName only after login succeeds, so they attach to
-        // the resolved appUserID rather than a soon-to-be-merged anonymous one.
+        // Set attributes only after login succeeds, so they attach to the
+        // resolved appUserID rather than a soon-to-be-merged anonymous one.
         (async () => {
-          if (await ensureLoggedIn(appUserId)) await applyIdentityAttributes(msg);
+          if (await ensureLoggedIn(appUserId)) {
+            await Promise.all([applyIdentityAttributes(msg), applyDeviceAttributes()]);
+          }
         })(),
       ]);
     },
