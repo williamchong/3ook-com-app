@@ -31,6 +31,7 @@ import {
 import { clearHandlers, dispatch, registerHandlers } from '../services/bridge-dispatcher';
 import { getDownloadHandlers } from '../services/download-bridge';
 import { getIdentityHandlers } from '../services/identity-bridge';
+import { captureInstallAttribution } from '../services/install-attribution';
 import {
   configureIAP,
   getIAPHandlers,
@@ -228,6 +229,7 @@ export default function App() {
 
   useEffect(() => {
     configureIAP();
+    captureInstallAttribution();
     registerHandlers(getAudioHandlers());
     registerHandlers(getDownloadHandlers());
     registerHandlers(getIntercomHandlers(sendToWebView));

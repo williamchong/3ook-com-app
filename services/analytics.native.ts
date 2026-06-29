@@ -45,6 +45,18 @@ export function trackEvent(event: string, properties?: AnalyticsProperties): voi
     .catch((e) => console.warn('[analytics] firebase logEvent failed', e));
 }
 
+// Attach durable properties (e.g. install attribution) to every subsequent
+// PostHog event on this device. Firebase collects install attribution natively
+// via GA4, so this targets PostHog only.
+export function registerSuperProperties(properties: AnalyticsProperties): void {
+  try {
+    // Cast through unknown for posthog-react-native's stricter type, as trackEvent does.
+    posthog.register(properties as unknown as Record<string, string | number | boolean | null>);
+  } catch (e) {
+    console.warn('[analytics] posthog.register failed', e);
+  }
+}
+
 export async function identify(
   userId: string,
   traits: AnalyticsIdentifyTraits,

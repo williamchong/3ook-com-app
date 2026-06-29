@@ -14,6 +14,8 @@ export interface AnalyticsIdentifyTraits {
 
 export function trackEvent(event: string, properties?: AnalyticsProperties): void;
 
+export function registerSuperProperties(properties: AnalyticsProperties): void;
+
 export function identify(
   userId: string,
   traits: AnalyticsIdentifyTraits,
