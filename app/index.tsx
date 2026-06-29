@@ -32,6 +32,7 @@ import { clearHandlers, dispatch, registerHandlers } from '../services/bridge-di
 import { getDownloadHandlers } from '../services/download-bridge';
 import { getIdentityHandlers } from '../services/identity-bridge';
 import { captureInstallAttribution } from '../services/install-attribution';
+import type { InstallAttribution } from '../services/install-attribution';
 import {
   configureIAP,
   getIAPHandlers,
@@ -106,6 +107,9 @@ export default function App() {
   // URL and flush it from handleLoad once the page is navigable.
   const hasLoadedRef = useRef(false);
   const pendingDeepLinkRef = useRef<string | null>(null);
+  // Android install-referrer attribution, persisted natively and re-asserted on
+  // the window for the web's getAnalyticsParameters fallback to read.
+  const installAttributionRef = useRef<InstallAttribution | null>(null);
 
   useEffect(() => {
     // Kick off connectivity resolution in parallel with URL resolution — it's
@@ -165,6 +169,17 @@ export default function App() {
   const navigateWebView = useCallback((target: string) => {
     webViewRef.current?.injectJavaScript(
       `window.location.href = ${JSON.stringify(target)};true;`
+    );
+  }, []);
+
+  // Each WebView load lands in a fresh JS context, so re-assert install
+  // attribution on every load; the web reads it lazily at checkout time.
+  const injectInstallAttribution = useCallback(() => {
+    const attr = installAttributionRef.current;
+    if (!attr) return;
+    webViewRef.current?.injectJavaScript(
+      `window.__nativeBridge=window.__nativeBridge||{};` +
+        `window.__nativeBridge.installAttribution=${JSON.stringify(attr)};true;`
     );
   }, []);
 
@@ -229,7 +244,11 @@ export default function App() {
 
   useEffect(() => {
     configureIAP();
-    captureInstallAttribution();
+    captureInstallAttribution().then((attr) => {
+      if (!attr || !Object.keys(attr.attribution).length) return;
+      installAttributionRef.current = attr;
+      if (hasLoadedRef.current) injectInstallAttribution();
+    });
     registerHandlers(getAudioHandlers());
     registerHandlers(getDownloadHandlers());
     registerHandlers(getIntercomHandlers(sendToWebView));
@@ -251,7 +270,7 @@ export default function App() {
       unsubscribeIntercom();
       clearHandlers();
     };
-  }, [sendToWebView, handleNotificationDeepLink]);
+  }, [sendToWebView, handleNotificationDeepLink, injectInstallAttribution]);
 
   // Reload WebView when iOS kills its content process in the background.
   const handleContentProcessDidTerminate = useCallback(() => {
@@ -290,12 +309,13 @@ export default function App() {
     setLoadFailed(false);
     setIsRetryInProgress(false);
     hasLoadedRef.current = true;
+    injectInstallAttribution();
     const pending = pendingDeepLinkRef.current;
     if (pending) {
       pendingDeepLinkRef.current = null;
       navigateWebView(pending);
     }
-  }, [clearRetryTimer, navigateWebView]);
+  }, [clearRetryTimer, navigateWebView, injectInstallAttribution]);
 
   // Each WebView load lands in a fresh JS context with no memory of prior
   // dispatches; re-emit native state that web listeners want at boot.
