@@ -179,8 +179,17 @@ function armStuckTimer(): void {
     stuckRetried = true;
     const p = getActivePlayer();
     if (!p) return;
-    // Non-disruptive retry: just call play() instead of replace(),
-    // so we don't nuke a nearly-ready buffer on slow connections.
+    // Player never buffered (silently-failed source, the common mid-queue
+    // stuck case): re-issue the source to force a fresh fetch. If it IS
+    // mid-buffer, the bare play() below avoids nuking a nearly-ready buffer.
+    const track = queue[currentIndex];
+    if (track && !p.isLoaded && !p.isBuffering) {
+      // Pause before replace so iOS doesn't schedule its own auto-resume
+      // that races the play() below and mis-binds didJustFinish (see playTrack).
+      p.pause();
+      p.replace({ uri: track.uri, headers: track.headers });
+      p.setPlaybackRate(currentRate);
+    }
     p.play();
     stuckTimer = setTimeout(() => {
       stuckTimer = null;
