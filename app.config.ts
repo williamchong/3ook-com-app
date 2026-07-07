@@ -158,7 +158,7 @@ const config: ExpoConfig = {
           ccacheEnabled: true,
         },
         android: {
-          buildArchs: ['arm64-v8a'],
+          buildArchs: ['armeabi-v7a', 'arm64-v8a'],
         },
       },
     ],
