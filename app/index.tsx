@@ -1,25 +1,18 @@
-import NetInfo, { type NetInfoState } from '@react-native-community/netinfo';
 import * as Application from 'expo-application';
 import * as Linking from 'expo-linking';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import {
-  ActivityIndicator,
-  BackHandler,
-  Platform,
-  Pressable,
-  StyleSheet,
-  Text,
-  View,
-} from 'react-native';
+import { BackHandler, Platform, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import WebView, { type WebViewMessageEvent } from 'react-native-webview';
 import type {
   ShouldStartLoadRequest,
-  WebViewErrorEvent,
   WebViewNavigation,
 } from 'react-native-webview/lib/WebViewTypes';
 
 import packageJson from '../package.json';
+import { LoadErrorOverlay } from '../components/LoadErrorOverlay';
+import { useDeepLinkRouting } from '../hooks/useDeepLinkRouting';
+import { useWebViewRecovery } from '../hooks/useWebViewRecovery';
 import { trackEvent } from '../services/analytics';
 import { isAppBoundHost } from '../services/app-bound-domains';
 import { isExternalBrowserHost } from '../services/external-hosts';
@@ -72,75 +65,15 @@ const NATIVE_BRIDGE_FEATURES: readonly string[] = [
 ];
 const NATIVE_BRIDGE_BOOTSTRAP = `(function(){try{window.__nativeBridge=window.__nativeBridge||{};window.__nativeBridge.features=${JSON.stringify(NATIVE_BRIDGE_FEATURES)};}catch(e){}})();true;`;
 
-// NetInfo reports isConnected as boolean | null; treat null/unknown as online so
-// the WebView is never gated offline on an indeterminate signal.
-const isStateOnline = (state: NetInfoState) => state.isConnected !== false;
-
-// Cold-start loads of 3ook.com sometimes fail with transient network errors
-// (NSURLErrorDomain -1004 cannot-connect-to-host being the most common) before
-// the radio/VPN/captive portal has fully settled. Auto-retry by remounting the
-// WebView via a key bump, then fall back to a manual retry overlay.
-const AUTO_RETRY_DELAYS_MS = [250, 750, 1000, 2500];
-const MAX_AUTO_RETRIES = AUTO_RETRY_DELAYS_MS.length;
-
 export default function App() {
   const insets = useSafeAreaInsets();
   const webViewRef = useRef<WebView>(null);
   const canGoBackRef = useRef(false);
   const currentURLRef = useRef<string>('');
   const [initialURL, setInitialURL] = useState<string | null>(null);
-  const [webViewKey, setWebViewKey] = useState(0);
-  const [loadFailed, setLoadFailed] = useState(false);
-  const [isRetryInProgress, setIsRetryInProgress] = useState(false);
-  // Connectivity drives two things: the Android cacheMode (serve the cached PWA
-  // shell when offline so the service worker can boot) and auto-recovery (reload
-  // the moment the connection returns instead of stranding the user on a manual
-  // Retry button). Mirror to a ref so the error/recovery callbacks read the
-  // current value without re-subscribing.
-  const [isOnline, setIsOnline] = useState(true);
-  const isOnlineRef = useRef(true);
-  const retryCountRef = useRef(0);
-  const hadLoadFailureRef = useRef(false);
-  const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // A push-notification tap can resolve a deep link before the WebView's first
-  // load lands (cold start). injectJavaScript is a no-op pre-load, so park the
-  // URL and flush it from handleLoad once the page is navigable.
-  const hasLoadedRef = useRef(false);
-  const pendingDeepLinkRef = useRef<string | null>(null);
   // Android install-referrer attribution, persisted natively and re-asserted on
   // the window for the web's getAnalyticsParameters fallback to read.
   const installAttributionRef = useRef<InstallAttribution | null>(null);
-
-  useEffect(() => {
-    // Kick off connectivity resolution in parallel with URL resolution — it's
-    // independent of the URL, and we only need it right before the first mount,
-    // so overlapping it with the Linking/storage awaits keeps it off the
-    // cold-start critical path. Default to online if NetInfo is unavailable.
-    const connectivity = Promise.resolve()
-      .then(() => NetInfo.fetch())
-      .then(isStateOnline)
-      .catch(() => true);
-    (async () => {
-      const deepLink = await Linking.getInitialURL();
-      const resolved = resolveDeepLinkURL(deepLink);
-      if (resolved) {
-        trackEvent('launched_with_deep_link', {
-          source: 'cold_start',
-          disposition: 'webview',
-        });
-      }
-      const url = resolved ?? (await getInitialURL());
-      currentURLRef.current = url;
-      // Seed connectivity before the WebView's first mount. Without this the
-      // initial render assumes online (LOAD_DEFAULT) and a cold offline launch
-      // fails on the network before NetInfo reports back; seeding it here means
-      // the first navigation already uses the offline cache mode on Android.
-      const online = await connectivity;
-      isOnlineRef.current = online;
-      setIsOnline(online);
-      setInitialURL(url);
-    })();
-  }, []);
 
   const sendToWebView = useCallback((data: object) => {
     const json = JSON.stringify(data);
@@ -156,30 +89,52 @@ export default function App() {
     );
   }, []);
 
-  // All in-WebView deep-link entries (warm Universal Links, push taps) go
-  // through here so they share the dedupe, tracking, and the parked-until-load
-  // gate — injectJavaScript into a pre-navigable WebView is silently dropped.
-  const routeToWebView = useCallback(
-    (target: string, source: string) => {
-      if (target === currentURLRef.current) return;
-      trackEvent('launched_with_deep_link', { source, disposition: 'webview' });
-      currentURLRef.current = target;
-      if (hasLoadedRef.current) {
-        navigateWebView(target);
-      } else {
-        pendingDeepLinkRef.current = target;
-      }
-    },
-    [navigateWebView]
-  );
+  const {
+    handleNotificationDeepLink,
+    markLoadStarted,
+    markLoadCompleted,
+    isLoaded,
+  } = useDeepLinkRouting({ navigateWebView, currentURLRef });
+
+  const {
+    isOnline,
+    loadFailed,
+    isRetryInProgress,
+    webViewKey,
+    seedConnectivity,
+    notifyLoadSucceeded,
+    handleWebViewError,
+    handleManualRetry,
+  } = useWebViewRecovery({
+    // Remount resets only the load gate. A deep link parked during a failed
+    // cold start intentionally survives the retry remount and flushes on the
+    // eventual successful load, not before.
+    onRemount: markLoadStarted,
+  });
 
   useEffect(() => {
-    const sub = Linking.addEventListener('url', ({ url }) => {
-      const target = resolveDeepLinkURL(url);
-      if (target) routeToWebView(target, 'warm');
-    });
-    return () => sub.remove();
-  }, [routeToWebView]);
+    // Kick off connectivity resolution in parallel with URL resolution — it's
+    // independent of the URL, and we only need it right before the first mount,
+    // so overlapping it with the Linking/storage awaits keeps it off the
+    // cold-start critical path.
+    const connectivityReady = seedConnectivity();
+    (async () => {
+      const deepLink = await Linking.getInitialURL();
+      const resolved = resolveDeepLinkURL(deepLink);
+      if (resolved) {
+        trackEvent('launched_with_deep_link', {
+          source: 'cold_start',
+          disposition: 'webview',
+        });
+      }
+      const url = resolved ?? (await getInitialURL());
+      currentURLRef.current = url;
+      // Await the connectivity seed before the WebView's first mount so a cold
+      // offline launch already uses the offline cache mode on Android.
+      await connectivityReady;
+      setInitialURL(url);
+    })();
+  }, [seedConnectivity]);
 
   // Each WebView load lands in a fresh JS context, so re-assert install
   // attribution on every load; the web reads it lazily at checkout time.
@@ -192,61 +147,12 @@ export default function App() {
     );
   }, []);
 
-  // Intercom push campaigns with a "URI on tap" deliver the destination via
-  // expo-notifications, not expo-linking, so they bypass the Linking listener
-  // above. The payload is campaign-authored (server-controlled), so route it
-  // through the same trust tiers as in-WebView navigation: 3ook host → SPA,
-  // allowlisted deep links (custom schemes + known wallet universal links) →
-  // OS, other https:// → system browser. Anything else (http://, javascript:,
-  // data:, non-allowlisted custom schemes) is dropped, never opened.
-  const handleNotificationDeepLink = useCallback(
-    (rawURL: string) => {
-      const target = resolveDeepLinkURL(rawURL);
-      if (target) {
-        routeToWebView(target, 'push_notification');
-        return;
-      }
-      if (isDeepLink(rawURL)) {
-        trackEvent('launched_with_deep_link', {
-          source: 'push_notification',
-          disposition: 'os',
-        });
-        openDeepLink(rawURL).catch((e) =>
-          console.warn('[push deep link] failed to open:', e)
-        );
-        return;
-      }
-      try {
-        const { protocol } = new URL(rawURL);
-        // HTTPS only: a campaign has no reason to open plaintext http, and
-        // dropping it removes a downgrade/MITM vector on the external tier.
-        if (protocol === 'https:') {
-          trackEvent('launched_with_deep_link', {
-            source: 'push_notification',
-            disposition: 'external',
-          });
-          openExternalURL(rawURL).catch((e) =>
-            console.warn('[push external link] failed to open:', e)
-          );
-          return;
-        }
-      } catch {
-        // Unparseable URI — fall through to the rejection path.
-      }
-      trackEvent('launched_with_deep_link', {
-        source: 'push_notification',
-        disposition: 'rejected',
-      });
-    },
-    [routeToWebView]
-  );
-
   useEffect(() => {
     configureIAP();
     captureInstallAttribution().then((attr) => {
       if (!attr || (!Object.keys(attr.attribution).length && !attr.affiliateFrom)) return;
       installAttributionRef.current = attr;
-      if (hasLoadedRef.current) injectInstallAttribution();
+      if (isLoaded()) injectInstallAttribution();
     });
     registerHandlers(getAudioHandlers());
     registerHandlers(getDownloadHandlers());
@@ -269,52 +175,25 @@ export default function App() {
       unsubscribeIntercom();
       clearHandlers();
     };
-  }, [sendToWebView, handleNotificationDeepLink, injectInstallAttribution]);
+  }, [sendToWebView, handleNotificationDeepLink, injectInstallAttribution, isLoaded]);
 
   // Reload WebView when iOS kills its content process in the background.
   const handleContentProcessDidTerminate = useCallback(() => {
     trackEvent('webview_content_terminated');
-    // reload() also triggers onLoadStart → handleLoadStart, but that fires
+    // reload() also triggers onLoadStart → markLoadStarted, but that fires
     // async: a tap landing between this call and onLoadStart would inject into
     // the now-dead JS context. Gate synchronously here to close that window.
-    hasLoadedRef.current = false;
+    markLoadStarted();
     webViewRef.current?.reload();
-  }, []);
+  }, [markLoadStarted]);
 
-  // Any full document load (cold start, pull-to-refresh, reload()) starts in a
-  // pre-navigable state where injectJavaScript is dropped. Re-arm the gate so
-  // handleNotificationDeepLink parks until handleLoad flushes. SPA pushState
-  // navigations don't fire onLoadStart, so this stays paired with onLoad.
-  const handleLoadStart = useCallback(() => {
-    hasLoadedRef.current = false;
-  }, []);
-
-  const clearRetryTimer = useCallback(() => {
-    if (retryTimerRef.current) {
-      clearTimeout(retryTimerRef.current);
-      retryTimerRef.current = null;
-    }
-  }, []);
-
-  // Success-only — onLoadEnd also fires on error (after onError), which would
-  // clobber the retry timer we just set. Use onLoad for the success path.
+  // Success-only load handler (see notifyLoadSucceeded for why not onLoadEnd).
+  // Inject attribution before markLoadCompleted flushes any parked navigation.
   const handleLoad = useCallback(() => {
-    if (hadLoadFailureRef.current) {
-      trackEvent('webview_load_recovered', { retry_count: retryCountRef.current });
-      hadLoadFailureRef.current = false;
-    }
-    retryCountRef.current = 0;
-    clearRetryTimer();
-    setLoadFailed(false);
-    setIsRetryInProgress(false);
-    hasLoadedRef.current = true;
+    notifyLoadSucceeded();
     injectInstallAttribution();
-    const pending = pendingDeepLinkRef.current;
-    if (pending) {
-      pendingDeepLinkRef.current = null;
-      navigateWebView(pending);
-    }
-  }, [clearRetryTimer, navigateWebView, injectInstallAttribution]);
+    markLoadCompleted();
+  }, [notifyLoadSucceeded, injectInstallAttribution, markLoadCompleted]);
 
   // Each WebView load lands in a fresh JS context with no memory of prior
   // dispatches; re-emit native state that web listeners want at boot.
@@ -323,107 +202,6 @@ export default function App() {
       resyncPushStatusToWeb(sendToWebView);
     }
   }, [sendToWebView]);
-
-  const remountWebView = useCallback(() => {
-    clearRetryTimer();
-    setLoadFailed(false);
-    // Intentionally leave pendingDeepLinkRef set: a deep link parked during a
-    // failed cold start must survive the retry remount and flush on the
-    // eventual successful load, not be dropped.
-    hasLoadedRef.current = false;
-    setWebViewKey((k) => k + 1);
-  }, [clearRetryTimer]);
-
-  const handleManualRetry = useCallback(() => {
-    trackEvent('webview_load_retry', { trigger: 'manual' });
-    retryCountRef.current = 0;
-    setIsRetryInProgress(true);
-    remountWebView();
-  }, [remountWebView]);
-
-  const handleWebViewError = useCallback(
-    (e: WebViewErrorEvent) => {
-      const { code, domain, description } = e.nativeEvent;
-      // -999 (NSURLErrorCancelled) fires when navigation is preempted, e.g. by
-      // onShouldStartLoadWithRequest returning false to hand off to the system
-      // browser. Not a real load failure — ignore.
-      if (code === -999) return;
-      hadLoadFailureRef.current = true;
-      const attempt = retryCountRef.current;
-      const offline = !isOnlineRef.current;
-      trackEvent('webview_load_failed', {
-        code,
-        domain: domain ?? null,
-        description: description ?? null,
-        retry_count: attempt,
-        offline,
-      });
-      // Offline: remounting to the network just fails again, and on Android the
-      // cached PWA shell was already attempted via cacheMode (LOAD_CACHE_ELSE_
-      // NETWORK) on this same load. So skip the auto-retry burst, surface the
-      // offline overlay immediately, and let the NetInfo listener auto-recover
-      // when the connection returns.
-      if (offline) {
-        clearRetryTimer();
-        retryCountRef.current = 0;
-        setIsRetryInProgress(false);
-        setLoadFailed(true);
-        return;
-      }
-      if (attempt < MAX_AUTO_RETRIES) {
-        const delay = AUTO_RETRY_DELAYS_MS[attempt];
-        retryCountRef.current = attempt + 1;
-        setIsRetryInProgress(true);
-        clearRetryTimer();
-        retryTimerRef.current = setTimeout(() => {
-          retryTimerRef.current = null;
-          trackEvent('webview_load_retry', { trigger: 'auto', attempt: attempt + 1 });
-          remountWebView();
-        }, delay);
-      } else {
-        clearRetryTimer();
-        setIsRetryInProgress(false);
-        setLoadFailed(true);
-      }
-    },
-    [clearRetryTimer, remountWebView]
-  );
-
-  useEffect(() => {
-    return () => {
-      clearRetryTimer();
-    };
-  }, [clearRetryTimer]);
-
-  // Auto-recover when connectivity returns. A cold offline launch lands on the
-  // offline overlay (or a cached shell); the moment the radio reconnects, remount
-  // for a fresh online load instead of stranding the user on the manual Retry
-  // button. Also keeps isOnline/cacheMode in sync for the offline error path.
-  useEffect(() => {
-    // Guard the subscription: if the RNCNetInfo native module is ever missing
-    // (e.g. a JS-only update shipped onto a binary built before this dependency),
-    // addEventListener throws — swallow it so the rest of the screen still mounts
-    // instead of crashing; the app just loses auto-recovery, not core function.
-    try {
-      const unsub = NetInfo.addEventListener((state) => {
-        const online = isStateOnline(state);
-        // NetInfo fires on any network detail change (signal, SSID, cellular
-        // subtype); only act on an actual connected/disconnected flip.
-        if (online === isOnlineRef.current) return;
-        isOnlineRef.current = online;
-        setIsOnline(online);
-        if (online && hadLoadFailureRef.current) {
-          trackEvent('webview_load_retry', { trigger: 'reconnect' });
-          retryCountRef.current = 0;
-          setIsRetryInProgress(true);
-          remountWebView();
-        }
-      });
-      return unsub;
-    } catch {
-      // Native module absent — skip auto-recovery.
-    }
-  }, [remountWebView]);
 
   // Intercept wallet deep links (wc:, metamask:, etc.) and route non-app-bound
   // top-frame navigations to the system browser — WebKit's app-bound enforcement
@@ -540,7 +318,7 @@ export default function App() {
             cacheMode={!isOnline ? 'LOAD_CACHE_ELSE_NETWORK' : 'LOAD_DEFAULT'}
             // Suppress react-native-webview's built-in error page (the raw
             // "Error loading page / net::ERR_INTERNET_DISCONNECTED" Chromium
-            // screen on Android, blank on iOS). Our overlay below is the single
+            // screen on Android, blank on iOS). LoadErrorOverlay is the single
             // error surface; render a matching-color blank so there's no flash.
             renderError={() => <View style={styles.errorFallback} />}
             webviewDebuggingEnabled={__DEV__}
@@ -548,7 +326,7 @@ export default function App() {
             onShouldStartLoadWithRequest={handleNavigationRequest}
             onNavigationStateChange={handleNavigationStateChange}
             onMessage={handleMessage}
-            onLoadStart={handleLoadStart}
+            onLoadStart={markLoadStarted}
             onLoad={handleLoad}
             onLoadEnd={handleLoadEnd}
             onContentProcessDidTerminate={handleContentProcessDidTerminate}
@@ -556,36 +334,12 @@ export default function App() {
             onHttpError={(e) => console.warn('[WebView HTTP error]', e.nativeEvent)}
           />
         )}
-        {isRetryInProgress && !loadFailed && (
-          <View style={styles.overlay} pointerEvents="none">
-            <ActivityIndicator
-              size="large"
-              color="#131313"
-              accessibilityLabel="Loading"
-              accessibilityRole="progressbar"
-            />
-          </View>
-        )}
-        {loadFailed && (
-          <View style={[styles.overlay, styles.errorOverlay]}>
-            <Text style={styles.errorTitle}>
-              {isOnline ? "Can't reach 3ook.com" : "You're offline"}
-            </Text>
-            <Text style={styles.errorBody}>
-              {isOnline
-                ? 'Check your connection and try again.'
-                : 'Reconnect to the internet to use 3ook.com.'}
-            </Text>
-            <Pressable
-              onPress={handleManualRetry}
-              style={({ pressed }) => [styles.retryButton, pressed && styles.retryButtonPressed]}
-              accessibilityRole="button"
-              accessibilityLabel="Retry loading"
-            >
-              <Text style={styles.retryButtonText}>Retry</Text>
-            </Pressable>
-          </View>
-        )}
+        <LoadErrorOverlay
+          isOnline={isOnline}
+          loadFailed={loadFailed}
+          isRetryInProgress={isRetryInProgress}
+          onRetry={handleManualRetry}
+        />
       </View>
     </>
   );
@@ -602,48 +356,8 @@ const styles = StyleSheet.create({
   webview: {
     flex: 1,
   },
-  overlay: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#f9f9f9',
-  },
   errorFallback: {
     flex: 1,
     backgroundColor: '#f9f9f9',
-  },
-  errorOverlay: {
-    paddingHorizontal: 32,
-  },
-  errorTitle: {
-    fontSize: 18,
-    fontWeight: '600',
-    color: '#131313',
-    marginBottom: 8,
-    textAlign: 'center',
-  },
-  errorBody: {
-    fontSize: 14,
-    color: '#5b5b5b',
-    marginBottom: 24,
-    textAlign: 'center',
-  },
-  retryButton: {
-    paddingHorizontal: 24,
-    paddingVertical: 12,
-    borderRadius: 24,
-    backgroundColor: '#131313',
-  },
-  retryButtonPressed: {
-    opacity: 0.7,
-  },
-  retryButtonText: {
-    color: '#f9f9f9',
-    fontSize: 15,
-    fontWeight: '600',
   },
 });
