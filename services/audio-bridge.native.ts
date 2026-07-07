@@ -266,6 +266,16 @@ export function handleLoad(msg: LoadMessage): Promise<void> {
 }
 
 async function doLoad(msg: LoadMessage): Promise<void> {
+  // Validate before any side effect: activating the audio session (which ducks
+  // other apps under doNotMix) for a malformed message would leave it held
+  // forever, since handleStop is the only release path.
+  if (!msg.tracks.length || msg.startIndex < 0 || msg.startIndex >= msg.tracks.length) return;
+
+  // The cookie read is independent of the session awaits below; start it now
+  // so it overlaps them instead of adding to tap-to-audio latency. On failure
+  // proceed without cookies.
+  const cookiesPromise = CookieManager.get(msg.tracks[0].url).catch(() => null);
+
   // Wait for any pending session release from a prior handleStop. Otherwise
   // setIsAudioActiveAsync(false) (background queue) can land after play()'s
   // synchronous activateSession(), leaving the session deactivated.
@@ -287,21 +297,13 @@ async function doLoad(msg: LoadMessage): Promise<void> {
 
   const p = getOrCreatePlayers();
 
-  const cookieUrl = msg.tracks[0]?.url;
-  let cookieHeader = '';
-  if (cookieUrl) {
-    try {
-      const cookies = await CookieManager.get(cookieUrl);
-      cookieHeader = Object.entries(cookies)
+  const cookies = await cookiesPromise;
+  const cookieHeader = cookies
+    ? Object.entries(cookies)
         .map(([name, cookie]) => `${name}=${cookie.value}`)
-        .join('; ');
-    } catch {
-      // Cookies unavailable — proceed without them
-    }
-  }
+        .join('; ')
+    : '';
   const headers = cookieHeader ? { Cookie: cookieHeader } : undefined;
-
-  if (!msg.tracks.length || msg.startIndex < 0 || msg.startIndex >= msg.tracks.length) return;
 
   requestBatteryOptimizationExemption();
 
