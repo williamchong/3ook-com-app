@@ -11,7 +11,7 @@
 ## Tech stack and baseline assumptions
 - Expo SDK 55, React Native 0.83, React 19, TypeScript strict mode.
 - Package manager: **npm** (`package-lock.json` is committed).
-- CI uses Node 22 and runs:
+- CI uses Node 24 (pinned via `.nvmrc`) and runs:
   1. `npm ci`
   2. `npm run lint`
   3. `npx tsc --noEmit`

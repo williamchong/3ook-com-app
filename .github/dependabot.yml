@@ -1,0 +1,10 @@
+version: 2
+updates:
+  # Keep GitHub Actions pinned to current versions. Scoped to actions only —
+  # Expo/native deps must be bumped manually via `expo install`.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "⬆️"

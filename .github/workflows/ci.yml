@@ -6,6 +6,13 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   lint-and-typecheck:
     runs-on: ubuntu-latest
@@ -15,8 +22,11 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version-file: .nvmrc
           cache: npm
+
+      - name: Check eas.json Node pin matches .nvmrc
+        run: npm run check:node-pin
 
       - run: npm ci
 
