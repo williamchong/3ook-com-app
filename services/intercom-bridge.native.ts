@@ -398,6 +398,7 @@ export function wrapIdentityHandlers(
         evm_wallet: typeof msg.evmWallet === 'string' ? msg.evmWallet : undefined,
         like_wallet: typeof msg.likeWallet === 'string' ? msg.likeWallet : undefined,
         is_liker_plus: !!msg.isLikerPlus,
+        liker_plus_tier: typeof msg.likerPlusTier === 'string' ? msg.likerPlusTier : undefined,
         login_method: typeof msg.loginMethod === 'string' ? msg.loginMethod : undefined,
         locale: typeof msg.locale === 'string' ? msg.locale : undefined,
       },

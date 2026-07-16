@@ -14,6 +14,8 @@ export function getIdentityHandlers(): BridgeHandlerMap {
       const displayName =
         typeof msg.displayName === 'string' ? msg.displayName : undefined;
       const isLikerPlus = !!msg.isLikerPlus;
+      const likerPlusTier =
+        typeof msg.likerPlusTier === 'string' ? msg.likerPlusTier : undefined;
       const loginMethod =
         typeof msg.loginMethod === 'string' ? msg.loginMethod : undefined;
       const locale = typeof msg.locale === 'string' ? msg.locale : undefined;
@@ -28,6 +30,7 @@ export function getIdentityHandlers(): BridgeHandlerMap {
         email,
         displayName,
         isLikerPlus,
+        likerPlusTier,
         loginMethod,
         locale,
         gaUserId,

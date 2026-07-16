@@ -5,6 +5,7 @@ export interface AnalyticsIdentifyTraits {
   email?: string;
   displayName?: string;
   isLikerPlus?: boolean;
+  likerPlusTier?: string;
   loginMethod?: string;
   locale?: string;
   // SHA-256 of the wallet — the only ID safe to forward to GA4 under its

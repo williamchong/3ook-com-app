@@ -1,7 +1,13 @@
 import Constants from 'expo-constants';
 import { Platform } from 'react-native';
 import Purchases, { PACKAGE_TYPE } from 'react-native-purchases';
-import type { CustomerInfo, PurchasesPackage, PurchasesStoreProduct } from 'react-native-purchases';
+import type {
+  CustomerInfo,
+  PurchasesOffering,
+  PurchasesOfferings,
+  PurchasesPackage,
+  PurchasesStoreProduct,
+} from 'react-native-purchases';
 
 import { getFirebaseAppInstanceId, trackEvent } from './analytics';
 import type { BridgeHandlerMap, SendToWebView } from './bridge-dispatcher';
@@ -13,6 +19,12 @@ import { openExternalURL } from './url-bridge';
 // entitlement, so feature gating is identical across platforms. Must match the
 // identifier set up in the dashboard.
 const PLUS_ENTITLEMENT_ID = 'plus';
+
+// Civic — the tier above Plus. It ships as a dedicated RevenueCat offering
+// (never the dashboard's "current" one, which stays Plus for older web builds)
+// and its own entitlement. Both must match the RevenueCat dashboard.
+const CIVIC_ENTITLEMENT_ID = 'civic';
+const CIVIC_OFFERING_ID = 'civic';
 
 // Generic store subscription-management pages. Used as a fallback when
 // RevenueCat's showManageSubscriptions() throws because it can't resolve a
@@ -74,6 +86,28 @@ export function configureIAP(): void {
 
 function hasPlus(customerInfo: CustomerInfo): boolean {
   return customerInfo.entitlements.active[PLUS_ENTITLEMENT_ID] !== undefined;
+}
+
+function hasCivic(customerInfo: CustomerInfo): boolean {
+  return customerInfo.entitlements.active[CIVIC_ENTITLEMENT_ID] !== undefined;
+}
+
+// Normalizes the web's optional `tier` field. Anything but 'civic' (missing,
+// unknown, or 'plus') resolves to 'plus' so older web builds that never send
+// a tier keep the pre-Civic purchase behavior unchanged.
+function normalizeTier(tier: unknown): 'plus' | 'civic' {
+  return tier === 'civic' ? 'civic' : 'plus';
+}
+
+// Resolves the offering a tier buys from: Civic reads its dedicated offering
+// by id; Plus keeps using the dashboard's current offering. Null when the
+// Civic offering isn't configured, so callers surface an error rather than
+// silently falling back to (and charging) the Plus offering.
+function offeringForTier(
+  offerings: PurchasesOfferings,
+  tier: 'plus' | 'civic',
+): PurchasesOffering | null {
+  return tier === 'civic' ? (offerings.all[CIVIC_OFFERING_ID] ?? null) : offerings.current;
 }
 
 // Maps the web's SubscriptionPlan period onto RevenueCat's predefined package
@@ -298,12 +332,13 @@ export function getIAPHandlers(send: SendToWebView): BridgeHandlerMap {
       // No default period: a malformed payload must error, not silently charge
       // the most expensive plan.
       const period = typeof msg.period === 'string' ? msg.period : '';
+      const tier = normalizeTier(msg.tier);
       // A period the store doesn't define would otherwise fall through to the
       // generic "no package" path; surface it distinctly so the web can tell a
       // malformed request apart from an offering that's genuinely missing.
       if (!(period in PERIOD_TO_PACKAGE_TYPE)) {
-        send({ type: 'iapPurchaseResult', status: 'error', period, message: 'Invalid period' });
-        trackEvent('iap_purchase_error', { period, reason: 'invalid_period' });
+        send({ type: 'iapPurchaseResult', status: 'error', period, tier, message: 'Invalid period' });
+        trackEvent('iap_purchase_error', { period, tier, reason: 'invalid_period' });
         return;
       }
       // Required: a purchase under an anonymous id can never be credited by the
@@ -311,22 +346,32 @@ export function getIAPHandlers(send: SendToWebView): BridgeHandlerMap {
       // would pay and get nothing. Refuse instead.
       const appUserId = normalizeLikerId(msg.likerId);
       if (!appUserId) {
-        send({ type: 'iapPurchaseResult', status: 'error', period, message: 'Missing user id' });
-        trackEvent('iap_purchase_error', { period, reason: 'missing_liker_id' });
+        send({ type: 'iapPurchaseResult', status: 'error', period, tier, message: 'Missing user id' });
+        trackEvent('iap_purchase_error', { period, tier, reason: 'missing_liker_id' });
         return;
       }
       try {
         if (!(await ensureLoggedIn(appUserId))) {
-          send({ type: 'iapPurchaseResult', status: 'error', period, message: 'Sign-in failed' });
-          trackEvent('iap_purchase_error', { period, reason: 'login_failed' });
+          send({ type: 'iapPurchaseResult', status: 'error', period, tier, message: 'Sign-in failed' });
+          trackEvent('iap_purchase_error', { period, tier, reason: 'login_failed' });
           return;
         }
         const offerings = await Purchases.getOfferings();
-        const packages = offerings.current?.availablePackages ?? [];
-        const pkg = packageForPeriod(packages, period);
+        const offering = offeringForTier(offerings, tier);
+        const pkg = packageForPeriod(offering?.availablePackages ?? [], period);
         if (!pkg) {
-          send({ type: 'iapPurchaseResult', status: 'error', period, message: 'No package available' });
-          trackEvent('iap_purchase_error', { period, reason: 'no_package' });
+          // Distinguish a missing/empty Civic offering so a misconfigured
+          // dashboard doesn't look like the generic Plus no-package case.
+          const message =
+            tier === 'civic'
+              ? 'No Civic package available'
+              : 'No package available';
+          send({ type: 'iapPurchaseResult', status: 'error', period, tier, message });
+          trackEvent('iap_purchase_error', {
+            period,
+            tier,
+            reason: tier === 'civic' ? 'no_civic_package' : 'no_package',
+          });
           return;
         }
         // Set the web's gift/affiliate/attribution as subscriber attributes right
@@ -348,27 +393,32 @@ export function getIAPHandlers(send: SendToWebView): BridgeHandlerMap {
         }
         const { customerInfo } = await Purchases.purchasePackage(pkg);
         const isPlus = hasPlus(customerInfo);
+        const isCivic = hasCivic(customerInfo);
         send({
           type: 'iapPurchaseResult',
           status: 'success',
           period,
+          tier,
           isPlus,
+          isCivic,
           productId: pkg.product.identifier,
         });
         trackEvent('iap_purchase_success', {
           period,
+          tier,
           product_id: pkg.product.identifier,
           is_plus: isPlus,
+          is_civic: isCivic,
         });
       } catch (e) {
         const err = e as { userCancelled?: boolean; message?: string };
         if (err.userCancelled) {
-          send({ type: 'iapPurchaseResult', status: 'cancelled', period });
-          trackEvent('iap_purchase_cancelled', { period });
+          send({ type: 'iapPurchaseResult', status: 'cancelled', period, tier });
+          trackEvent('iap_purchase_cancelled', { period, tier });
           return;
         }
-        send({ type: 'iapPurchaseResult', status: 'error', period, message: err.message || 'Purchase failed' });
-        trackEvent('iap_purchase_error', { period, reason: 'exception' });
+        send({ type: 'iapPurchaseResult', status: 'error', period, tier, message: err.message || 'Purchase failed' });
+        trackEvent('iap_purchase_error', { period, tier, reason: 'exception' });
         console.warn('[iap] purchase failed', e);
       }
     },
@@ -392,8 +442,9 @@ export function getIAPHandlers(send: SendToWebView): BridgeHandlerMap {
         }
         const customerInfo = await Purchases.restorePurchases();
         const isPlus = hasPlus(customerInfo);
-        send({ type: 'iapRestoreResult', status: 'success', isPlus });
-        trackEvent('iap_restore_success', { is_plus: isPlus });
+        const isCivic = hasCivic(customerInfo);
+        send({ type: 'iapRestoreResult', status: 'success', isPlus, isCivic });
+        trackEvent('iap_restore_success', { is_plus: isPlus, is_civic: isCivic });
       } catch (e) {
         const err = e as { message?: string };
         send({ type: 'iapRestoreResult', status: 'error', message: err.message || 'Restore failed' });
@@ -436,10 +487,15 @@ export function getIAPHandlers(send: SendToWebView): BridgeHandlerMap {
     // Also carries the store's intro offer (`trialPeriodDays` / `isFreeTrial` /
     // `introPrice…`) so the web shows the trial the store will actually grant
     // rather than a hardcoded one — omitted when the product has no intro offer.
-    iapGetOfferings: async () => {
+    iapGetOfferings: async (msg) => {
+      // Same optional `tier` field as iapPurchase; the tier is echoed back so
+      // the web can match a response to the offering it asked for. A missing
+      // or empty Civic offering just yields an empty `packages` array.
+      const tier = normalizeTier(msg.tier);
       try {
         const offerings = await Purchases.getOfferings();
-        const packages = (offerings.current?.availablePackages ?? []).map((p) => {
+        const offering = offeringForTier(offerings, tier);
+        const packages = (offering?.availablePackages ?? []).map((p) => {
           const intro = extractIntroOffer(p.product);
           return {
             period:
@@ -460,9 +516,9 @@ export function getIAPHandlers(send: SendToWebView): BridgeHandlerMap {
             }),
           };
         });
-        send({ type: 'iapOfferings', packages });
+        send({ type: 'iapOfferings', tier, packages });
       } catch (e) {
-        send({ type: 'iapOfferings', packages: [] });
+        send({ type: 'iapOfferings', tier, packages: [] });
         console.warn('[iap] getOfferings failed', e);
       }
     },

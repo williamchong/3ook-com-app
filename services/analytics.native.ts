@@ -61,13 +61,14 @@ export async function identify(
   userId: string,
   traits: AnalyticsIdentifyTraits,
 ): Promise<void> {
-  const { email, displayName, isLikerPlus, loginMethod, locale, gaUserId } = traits;
+  const { email, displayName, isLikerPlus, likerPlusTier, loginMethod, locale, gaUserId } = traits;
 
   try {
     posthog.identify(userId, {
       email: email ?? null,
       name: displayName ?? null,
       is_liker_plus: !!isLikerPlus,
+      liker_plus_tier: likerPlusTier ?? null,
       login_method: loginMethod ?? null,
       locale: locale ?? null,
     });
@@ -77,6 +78,7 @@ export async function identify(
 
   const userProps = {
     is_liker_plus: String(!!isLikerPlus),
+    liker_plus_tier: likerPlusTier ?? '',
     login_method: loginMethod ?? '',
     locale: locale ?? '',
   };

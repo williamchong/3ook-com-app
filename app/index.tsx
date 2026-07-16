@@ -73,7 +73,8 @@ const NATIVE_BRIDGE_FEATURES: readonly string[] = [
   // `pushPermissionChanged`); advertise only when both are usable.
   ...(isIntercomPushSupported() ? ['intercomPush'] : []),
   // RevenueCat in-app purchases; only when a platform API key is configured.
-  ...(isIAPAvailable() ? ['iap'] : []),
+  // `iapCivic` marks builds whose purchase bridge understands the Civic tier.
+  ...(isIAPAvailable() ? ['iap', 'iapCivic'] : []),
   // Native App Store / Play rating prompt. Whether it actually appears is up to
   // the store (engagement gate, per-version and yearly quotas), so web should
   // treat requestStoreReview as a hint, never as a guaranteed dialog.
