@@ -81,6 +81,10 @@ const NATIVE_BRIDGE_FEATURES: readonly string[] = [
   // Native WKWebView cache clear; the web chunk-error plugin's last escalation
   // rung. See modules/webview-cache.
   ...(isWebViewCacheClearSupported() ? ['clearWebViewCache'] : []),
+  // Drops app-managed content caches (currently TTS audio); wired to the web's
+  // clear-caches flow. Deliberately not gated by the cache kill-switch flag:
+  // clearing must work even when the cache is flagged off.
+  'clearNativeCaches',
 ];
 const NATIVE_BRIDGE_BOOTSTRAP = `(function(){try{window.__nativeBridge=window.__nativeBridge||{};window.__nativeBridge.features=${JSON.stringify(NATIVE_BRIDGE_FEATURES)};}catch(e){}})();true;`;
 

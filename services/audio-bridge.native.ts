@@ -17,6 +17,7 @@ import {
 
 import { trackEvent } from './analytics';
 import {
+  clearAudioCache,
   ensureCachedAudio,
   evictCachedAudio,
   getCachedAudioUri,
@@ -588,6 +589,10 @@ export function getAudioHandlers(): BridgeHandlerMap {
         return handleSeekTo(msg.position);
       }
     },
+    // App-managed content caches — currently just TTS audio; hook future
+    // content caches in here. The WebView HTTP/SW cache stays separate
+    // (clearWebViewCache — it reloads); logout also clears via resetUser.
+    clearNativeCaches: () => clearAudioCache(),
   };
 }
 
