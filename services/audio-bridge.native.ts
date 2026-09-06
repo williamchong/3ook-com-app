@@ -89,6 +89,9 @@ let lastSentWarmedThrough = -1;
 // Longer than web player's 5s because iOS uses blocking=1 URLs where the
 // server generates the full TTS audio before responding.
 const STUCK_TIMEOUT_MS = 15000;
+// Playhead movement over a whole stuck window that still counts as stalled. A
+// stream that rendered a fraction of a second and then starved is dead, not slow.
+const MIN_PROGRESS_S = 1;
 // How often each player emits playbackStatusUpdate (expo-audio default: 500ms).
 // With two persistent players that polling is a steady background CPU/battery
 // cost; 1000ms halves it. onStatus only needs coarse state transitions, and
@@ -344,8 +347,15 @@ function resetRecoveryState(): void {
 
 function armStuckTimer(): void {
   clearStuckTimer();
+  // Baseline for the progress test below: how far the playhead moves over a
+  // stuck window separates a dead stream from a slow one still filling.
+  const armedAt = getActivePlayer()?.currentTime ?? 0;
   stuckTimer = setTimeout(() => {
-    if (lastSentState === 'playing' || !active || stuckRetried || errored) return;
+    // 'paused' covers a lock-screen or interruption pause, which bypasses
+    // handlePause and so leaves this timer armed. Re-issuing there would spend
+    // a fresh blocking synthesis on audio the listener just stopped.
+    if (lastSentState === 'playing' || lastSentState === 'paused') return;
+    if (!active || stuckRetried || errored) return;
     console.warn('Audio stuck — retrying playback');
     stuckRetried = true;
     const p = getActivePlayer();
@@ -356,22 +366,23 @@ function armStuckTimer(): void {
       current_index: currentIndex,
       cache_state: cacheState,
       is_online: isOnline,
+      advanced_ms: Math.round((p.currentTime - armedAt) * 1000),
     });
-    // A stall is usually a deactivated iOS session, not a bad segment: hits
-    // stall as often as misses and almost all happen online, so the file is
-    // fine. Re-assert the session, keeping any cached copy for the re-issue.
+    // Two stalls share this path: a deactivated iOS session, which the
+    // re-assert fixes, and a hung fetch, which needs the source re-issued.
     reassertSession(
       'stuck_retry',
       p,
       () => {
-        // Read the load state after the session await, not before: the source
-        // may have loaded meanwhile, and replacing then restarts a segment
-        // that already recovered on its own.
-        if (track && !p.isLoaded && !p.isBuffering) {
+        // Progress, read after the session await, is the test: isLoaded and
+        // isBuffering both stay true on a hung fetch, so they cannot gate this.
+        if (track && p.currentTime - armedAt < MIN_PROGRESS_S) {
           // Pause before replace so iOS doesn't schedule its own auto-resume that
           // races the play() below and mis-binds didJustFinish (see playTrack).
           p.pause();
-          p.replace(playbackSource(track));
+          // Stream past a cached copy that just stalled: replaying it off disk
+          // would reproduce the same stall. Offline it is all we have.
+          p.replace(cacheState === 'hit' && isOnline ? streamSource(track) : playbackSource(track));
           p.setPlaybackRate(currentRate);
         }
         p.play();
@@ -381,7 +392,11 @@ function armStuckTimer(): void {
     );
     stuckTimer = setTimeout(() => {
       stuckTimer = null;
-      if (lastSentState === 'playing' || !active || errored) return;
+      // 'paused' stands this leg down for the same reason as the retry above:
+      // a lock-screen pause leaves `active` true, and reporting a failure there
+      // would evict a good cached segment and surface an error for a stop.
+      if (lastSentState === 'playing' || lastSentState === 'paused') return;
+      if (!active || errored) return;
       console.warn('Audio stuck — retry failed');
       errored = true;
       // Stalled twice, the second time after a re-issue: the disk copy is
@@ -392,6 +407,7 @@ function armStuckTimer(): void {
         current_index: currentIndex,
         cache_state: cacheState,
         is_online: isOnline,
+        advanced_ms: Math.round(((getActivePlayer()?.currentTime ?? armedAt) - armedAt) * 1000),
       });
       notifyWebView?.({ type: 'error', message: 'Playback stuck' });
     }, STUCK_TIMEOUT_MS);
@@ -744,7 +760,13 @@ export function handleSetRate(rate: number): void {
 }
 
 export async function handleSeekTo(position: number): Promise<void> {
-  await getActivePlayer()?.seekTo(position);
+  const p = getActivePlayer();
+  if (!p) return;
+  // A seek moves the playhead the stuck check measures, so restart the window
+  // against the new position rather than reading the jump as progress.
+  clearStuckTimer();
+  await p.seekTo(position);
+  if (active) armStuckTimer();
 }
 
 export function getAudioHandlers(): BridgeHandlerMap {
